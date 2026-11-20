@@ -6,29 +6,15 @@
 	<string>3.0</string>
 	<key>devices</key>
 	<dict>
-		<key>Virtual Scanner EX/AF</key>
+		<key>CanoScan LiDE 70</key>
 		<dict>
 			<key>iconFile</key>
-			<string>/System/Library/Image Capture/Support/Icons/GenericScanner.icns</string>
-			<key>ButtonTypes</key>
-			<dict>
-				<key>scan</key>
-				<dict>
-					<key>application</key>
-					<string>/Applications/Image Capture.app</string>
-					<key>label</key>
-					<string>Scan</string>
-				</dict>
-			</dict>
+			<string>/System/Library/Image Capture/Devices/AirScanScanner.app/Contents/Resources/GenericAirScanScanner.icns</string>
 			<key>functionalUnitDescriptions</key>
 			<array>
 				<dict>
 					<key>type</key>
 					<integer>0</integer>
-				</dict>
-				<dict>
-					<key>type</key>
-					<integer>3</integer>
 				</dict>
 			</array>
 		</dict>

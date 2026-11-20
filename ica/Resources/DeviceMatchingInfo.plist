@@ -2,62 +2,29 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>BonjourNetwork</key>
-	<dict>
-		<key>_scanner._tcp.</key>
-		<array>
-			<dict>
-				<key>device events</key>
-				<array>
-					<string>scan</string>
-				</array>
-				<key>device type</key>
-				<string>scanner</string>
-				<key>ICABonjourTXTRecordKey</key>
-				<dict>
-					<key>mdl</key>
-					<string>Virtual Scanner</string>
-					<key>mfg</key>
-					<string>Apple</string>
-				</dict>
-			</dict>
-		</array>
-	</dict>
-	<key>firewire</key>
-	<dict>
-		<key>IOSCSIPeripheralDeviceNub</key>
-		<array>
-			<dict>
-				<key>device events</key>
-				<array>
-					<string>scan</string>
-				</array>
-				<key>device type</key>
-				<string>scanner</string>
-				<key>Product Identification</key>
-				<string>Apple Imaginary Scanner s100</string>
-				<key>Vendor Identification</key>
-				<string>Apple</string>
-			</dict>
-		</array>
-	</dict>
 	<key>usb</key>
 	<dict>
 		<key>IOUSBDevice</key>
 		<array>
 			<dict>
-				<key>device events</key>
-				<array>
-					<string>scan</string>
-				</array>
 				<key>device type</key>
 				<string>scanner</string>
-				<key>idProduct</key>
-				<string>0x0500</string>
 				<key>idVendor</key>
-				<string>0x05AC</string>
+				<string>0x04A9</string>
+				<key>idProduct</key>
+				<string>0x2225</string>
 				<key>Product Identification</key>
-				<string>Apple Imaginary Scanner s100</string>
+				<string>CanoScan LiDE 70</string>
+			</dict>
+			<dict>
+				<key>device type</key>
+				<string>scanner</string>
+				<key>idVendor</key>
+				<string>0x04A9</string>
+				<key>idProduct</key>
+				<string>0x2224</string>
+				<key>Product Identification</key>
+				<string>CanoScan LiDE 600</string>
 			</dict>
 		</array>
 	</dict>

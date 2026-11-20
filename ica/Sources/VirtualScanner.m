@@ -51,6 +51,12 @@
 #import "ScannedImage.h"
 #import <ImageCaptureCore/ICScannerFunctionalUnits.h>
 #include <dlfcn.h>
+#include "lide70_usb.h"
+
+// sanei_usb entry points implemented by shim/sanei_usb_libusb.c (SANE_Status/SANE_Int are int-sized).
+extern void sanei_usb_init( void );
+extern int  sanei_usb_open( const char* name, int* dn );
+extern void sanei_usb_close( int dn );
 
 extern  BOOL  _gIsVirtualScanner;
 
@@ -346,10 +352,38 @@ virtualButtonCallback(
     {
         self.usbLocationID  = locationID;
         _scannedImages      = [[NSMutableArray alloc] init];
-        
-        // add code to initialize the USB device object
+
+        // The sample only loaded its property lists on the virtual-scanner path; a real device needs them too,
+        // since they define the scanner name, functional unit and capabilities reported to clients.
+        self.propertyListPath = [[NSBundle mainBundle] pathForResource:@"ScannerProperties" ofType:@"plist"];
+        self.deviceInfoPath   = [[NSBundle mainBundle] pathForResource:@"DeviceInfo" ofType:@"plist"];
+
+        if ( !self.propertyListPath || !self.deviceInfoPath )
+        {
+            Log( "LiDE70: missing ScannerProperties.plist or DeviceInfo.plist in bundle\n" );
+            [self release];
+            return NULL;
+        }
+        [self readProperties];
+
+        // Map ICA's locationID to the libusb shim's device name, then check that this process can claim the
+        // interface. The claim is released right away: the scanner is only held for the duration of a scan.
+        if ( lide70_usb_name_for_location( locationID, _usbDeviceName, sizeof(_usbDeviceName) ) != 0 )
+        {
+            Log( "LiDE70: no libusb device at locationID 0x%08x\n", (unsigned)locationID );
+            [self release];
+            return NULL;
+        }
+
+        int dn     = -1;
+        int status = sanei_usb_open( _usbDeviceName, &dn );
+
+        Log( "LiDE70: locationID 0x%08x -> %s, probe claim status %d (0 = GOOD, 3 = DEVICE_BUSY)\n",
+             (unsigned)locationID, _usbDeviceName, status );
+        if ( status == 0 )
+            sanei_usb_close( dn );
     }
-    
+
     return self;
 }
 

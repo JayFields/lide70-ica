@@ -6,6 +6,7 @@
 #include "../include/sane/config.h"
 #include "../include/sane/sane.h"
 #include <libusb.h>
+#include <stdint.h>
 
 #define MAX_DEVS 8
 
@@ -63,6 +64,47 @@ sanei_usb_attach_matching_devices (const char *line,
     }
   libusb_free_device_list (list, 1);
   return SANE_STATUS_GOOD;
+}
+
+/* Map a macOS IOKit USB locationID (as given to an ICA module) to the
+   "libusb:BUS:ADDR" name used by this shim. On macOS the top byte of the
+   locationID is the bus and each following nibble is one hop of the port
+   path, ending at the first zero nibble. Returns 0 on success, -1 if no
+   attached device has that location. */
+int
+lide70_usb_name_for_location (uint32_t loc, char *name, size_t len)
+{
+  uint8_t want[8], got[8];
+  int nwant = 0, ngot, shift, i, k, rc = -1;
+  libusb_device **list;
+  ssize_t n;
+
+  for (shift = 20; shift >= 0 && nwant < 8; shift -= 4)
+    {
+      uint8_t port = (loc >> shift) & 0xf;
+      if (!port)
+	break;
+      want[nwant++] = port;
+    }
+  sanei_usb_init ();
+  n = libusb_get_device_list (ctx, &list);
+  for (i = 0; i < n && rc; i++)
+    {
+      if (libusb_get_bus_number (list[i]) != ((loc >> 24) & 0xff))
+	continue;
+      ngot = libusb_get_port_numbers (list[i], got, sizeof got);
+      if (ngot != nwant)
+	continue;
+      for (k = 0; k < ngot && got[k] == want[k]; k++);
+      if (k != ngot)
+	continue;
+      snprintf (name, len, "libusb:%03d:%03d", libusb_get_bus_number (list[i]),
+		libusb_get_device_address (list[i]));
+      rc = 0;
+    }
+  libusb_free_device_list (list, 1);
+  TR ("name_for_location(0x%08x): %s", (unsigned) loc, rc ? "not found" : name);
+  return rc;
 }
 
 SANE_Status

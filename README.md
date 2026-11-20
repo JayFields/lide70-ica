@@ -22,10 +22,21 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
 - `tools/smoke.c` — init / list devices / exit.
 - `tools/usbprobe.c` — standalone libusb probe.
 
+- `ica/` — ICA scanner device module, adapted from Apple's VirtualScanner
+  sample (imported unmodified in its own commit; Apple sample code license).
+  Builds `build/LiDE70Scanner.app`, matching USB 04a9:2225 and 04a9:2224.
+
 ## Build
 
     brew install libusb pkg-config
-    make
+    make            # tools
+    make module     # ICA module (libusb linked statically, ad-hoc signed)
+    sudo make install    # copies to /Library/Image Capture/Devices (no build as root)
+
+The module only runs when launched by `icdd` (Image Capture selecting the
+scanner); started by hand it quits with "Open Device Failed". Its log:
+
+    /usr/bin/log stream --predicate 'subsystem == "local.lide70ica" OR process == "LiDE70Scanner"'
 
 ## Status (verified on an M-series Mac)
 

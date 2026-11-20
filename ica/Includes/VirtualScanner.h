@@ -52,14 +52,30 @@
 #import <IOKit/IOMessage.h>
 #import <IOKit/usb/IOUSBLib.h>
 #import <DiskArbitration/DiskArbitration.h>
-#import <asl.h>
+#import <os/log.h>
+#import <stdarg.h>
 
 //----------------------------------------------------------------------------------------------------------------------
-// Debug logging Macros. The preprocessor symbol SCANNER_DEBUG is defined in the Debug configuration of 
-// the target build settings.
+// Debug logging. SCANNER_DEBUG=1 (set by the Makefile) sends messages to the unified log:
+//   log stream --predicate 'subsystem == "local.lide70ica"'
+// asl(3) no longer reaches the log on current macOS. The message is pre-formatted and logged as
+// public so %s arguments are not redacted as <private>.
 
 #if ( SCANNER_DEBUG == 1 )
-#define Log( FMT, ARGS...)    asl_log( NULL, NULL, ASL_LEVEL_NOTICE, FMT, ## ARGS)
+static inline void __attribute__((format(printf, 1, 2))) LiDE70Log( const char* fmt, ... )
+{
+    static os_log_t lg;
+    char            buf[1024];
+    va_list         ap;
+
+    if ( !lg )
+        lg = os_log_create( "local.lide70ica", "module" );
+    va_start( ap, fmt );
+    vsnprintf( buf, sizeof buf, fmt, ap );
+    va_end( ap );
+    os_log( lg, "%{public}s", buf );
+}
+#define Log( FMT, ARGS...)    LiDE70Log( FMT, ## ARGS )
 #else
 #define Log( FMT, ARGS...)
 #endif
@@ -96,6 +112,7 @@ typedef struct ICARawFileHeader
 @interface VirtualScanner : NSObject
 {
     UInt32                  _usbLocationID;
+    char                    _usbDeviceName[32];   // shim device name ("libusb:BUS:ADDR") for _usbLocationID
     UInt64                  _firewireGuid;
     NSDictionary*           _networkParams;
 

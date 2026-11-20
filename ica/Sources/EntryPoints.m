@@ -70,7 +70,8 @@ LocationIDOfMatchingUSBDevice()
     UInt32        locationID  = 0;
     io_iterator_t iterator    = 0;
     
-    if ( IOServiceGetMatchingServices( kIOMasterPortDefault, IOServiceMatching( kIOUSBDeviceClassName ), &iterator ) == kIOReturnSuccess )
+    // USB devices are IOUSBHostDevice objects on current macOS.
+    if ( IOServiceGetMatchingServices( kIOMainPortDefault, IOServiceMatching( "IOUSBHostDevice" ), &iterator ) == kIOReturnSuccess )
     {
         BOOL          found     = NO;
         io_service_t  interface = 0;
@@ -81,17 +82,15 @@ LocationIDOfMatchingUSBDevice()
             
             if ( IORegistryEntryCreateCFProperties( interface, (CFMutableDictionaryRef*)&objProps, kCFAllocatorDefault, 0 ) == kIOReturnSuccess )
             {
-                // Check to see if this is your device
-                /*
+                // Canon CanoScan LiDE 70 (04a9:2225) or LiDE 600 (04a9:2224)
 				unsigned short  idVendor  = [[objProps objectForKey:@"idVendor"] unsignedShortValue];
 				unsigned short  idProduct = [[objProps objectForKey:@"idProduct"] unsignedShortValue];
-                
-                if ( ( idVendor == yourDeviceVendorID ) && ( idProduct == yourDeviceProductID ) )
+
+                if ( ( idVendor == 0x04a9 ) && ( idProduct == 0x2225 || idProduct == 0x2224 ) )
                 {
                     locationID  = [[objProps objectForKey:@"locationID"] unsignedIntValue];
                     found       = YES;
                 }
-                */
             }
             
             [objProps release];
