@@ -2718,11 +2718,23 @@ go_home_without_wait (CANON_Handle * chndl)
 }
 
 
+/* lide70-ica: set by sane_cancel() (possibly from another thread) to stop the
+   scan in progress; cleared when sane_start() returns, so a cancel that
+   arrives before the scan loop begins is not lost. */
+static volatile int cancel_requested = 0;
+
+/* lide70-ica: longest wait for the head to reach home. A return from the far
+   end of the bed takes a few seconds; upstream waits forever, which hangs
+   sane_start if the home sensor never reports home. */
+#define GO_HOME_TIMEOUT 30	/* seconds */
+
+/* Returns 0 when the head is home, -1 on timeout or cancel (lide70-ica). */
 static int
 go_home (CANON_Handle * chndl)
 {
   int fd = chndl->fd;
   byte value;
+  time_t start_time;
   cp2155_get (fd, 0x46, &value);
   DBG (1, "state sensor: %02x\n", value);
   if (value == 0x08)
@@ -2731,6 +2743,7 @@ go_home (CANON_Handle * chndl)
     }
 
   go_home_without_wait (chndl);
+  start_time = time (NULL);
 
   while (1)
     {
@@ -2742,14 +2755,21 @@ go_home (CANON_Handle * chndl)
 	{
 	  break;
 	}
+      if (cancel_requested)
+	{
+	  DBG (1, "go_home: cancelled\n");
+	  return -1;
+	}
+      if (time (NULL) - start_time > GO_HOME_TIMEOUT)
+	{
+	  DBG (1, "go_home: head not home after %d s (sensor %02x)\n",
+	       GO_HOME_TIMEOUT, value);
+	  return -1;
+	}
     }
   return 0;
 }
 
-/* lide70-ica: set by sane_cancel() (possibly from another thread) to stop the
-   scan in progress; cleared when sane_start() returns, so a cancel that
-   arrives before the scan loop begins is not lost. */
-static volatile int cancel_requested = 0;
 
 /* lide70-ica: optional consumer of image rows while the scan runs. preread
    calls it with each batch of finished rows (in the frame format reported by
@@ -3302,10 +3322,15 @@ CANON_start_scan (CANON_Handle * chndl)
   if (result < 0)
     {
       DBG (1, "Can't talk on USB.\n");
+      CANON_finish_scan (chndl);	/* lide70-ica: remove the temp file */
       return SANE_STATUS_IO_ERROR;
     }
 
-  go_home (chndl);
+  if (go_home (chndl) < 0)	/* lide70-ica: was unchecked */
+    {
+      CANON_finish_scan (chndl);
+      return cancel_requested ? SANE_STATUS_CANCELLED : SANE_STATUS_IO_ERROR;
+    }
 
   /* scan */
   if ((status = scan (chndl)) != SANE_STATUS_GOOD)

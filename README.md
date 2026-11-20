@@ -73,7 +73,12 @@ scanner); started by hand it quits with "Open Device Failed". Its log:
     "cancelled" reply to a band stops the scanner. Verified in Image
     Capture: overview; a nearly full page at 600 dpi (4976x6472, 33 s)
     saved correctly; Cancel stops the scanner ~1.7 s after the click.
-  - Untested: a complete 1200 dpi scan, Preview.
+  - 1200 dpi: a nearly full page (9952x12944, ~386 MB raw) took 7 min 49 s
+    and saved correctly; the image resolves the print's halftone dots.
+  - Preview (File > Import from Scanner): overview and 150 dpi area scans
+    opened correctly. Like Image Capture, it runs an overview automatically
+    when the scanner is selected; that is the client's choice
+    (`requestOverviewScan`), not something the module controls.
 - Built for macOS 27 (`MACOS_MIN` in the Makefile), because Homebrew's static
   libusb is.
 
