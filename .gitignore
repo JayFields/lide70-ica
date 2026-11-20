@@ -1,0 +1,11 @@
+build/
+/scantest
+/smoke
+/usbprobe
+*.o
+*.pnm
+*.ppm
+*.pgm
+*.pbm
+*.log
+.DS_Store
