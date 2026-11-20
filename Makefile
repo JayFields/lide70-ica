@@ -41,7 +41,8 @@ $(O):
 MODULE      = $(O)/LiDE70Scanner.app
 MOD_SRCS    = $(wildcard ica/Sources/*.m)
 MOD_OBJS    = $(patsubst ica/Sources/%.m,$(O)/ica/%.o,$(MOD_SRCS))
-MOD_HDRS    = $(wildcard ica/Includes/*.h) ica/VirtualScanner_Prefix.pch shim/lide70_usb.h
+MOD_HDRS    = $(wildcard ica/Includes/*.h) ica/VirtualScanner_Prefix.pch shim/lide70_usb.h shim/lide70_scan.h
+MOD_CORE    = $(O)/lide70_scan.o $(CORE)
 MOD_CFLAGS  = $(ARCH) -fno-objc-arc -include ica/VirtualScanner_Prefix.pch -Iica/Includes -Ishim \
               -DSCANNER_DEBUG=1 -Wall -Wno-deprecated-declarations
 LIBUSB_A   ?= $(shell pkg-config --variable=libdir libusb-1.0)/libusb-1.0.a
@@ -56,10 +57,13 @@ $(O)/ica/%.o: ica/Sources/%.m $(MOD_HDRS) | $(O)
 	@mkdir -p $(O)/ica
 	$(CC) $(MOD_CFLAGS) -c $< -o $@
 
-$(MODULE): $(MOD_OBJS) $(O)/shim.o ica/VirtualScanner-Info.plist $(MOD_RES)
+$(O)/lide70_scan.o: shim/lide70_scan.c shim/lide70_scan.h | $(O)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(MODULE): $(MOD_OBJS) $(MOD_CORE) ica/VirtualScanner-Info.plist $(MOD_RES)
 	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Resources/English.lproj
-	$(CC) $(ARCH) -o $@/Contents/MacOS/LiDE70Scanner $(MOD_OBJS) $(O)/shim.o $(MOD_LIBS)
+	$(CC) $(ARCH) -o $@/Contents/MacOS/LiDE70Scanner $(MOD_OBJS) $(MOD_CORE) $(MOD_LIBS) -lm
 	cp ica/VirtualScanner-Info.plist $@/Contents/Info.plist
 	printf 'APPL????' > $@/Contents/PkgInfo
 	cp $(MOD_RES) $@/Contents/Resources/

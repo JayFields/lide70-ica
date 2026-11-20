@@ -52,6 +52,7 @@
 #import <ImageCaptureCore/ICScannerFunctionalUnits.h>
 #include <dlfcn.h>
 #include "lide70_usb.h"
+#include "lide70_scan.h"
 
 // sanei_usb entry points implemented by shim/sanei_usb_libusb.c (SANE_Status/SANE_Int are int-sized).
 extern void sanei_usb_init( void );
@@ -907,564 +908,355 @@ bail:
 
 //--------------------------------------------------------------------------------------------- startScanningWithParams:
 // Start scanning using parameters
-
 /*
-  Discussion:  This method goes through the motions to create a byte buffer with the selected bit depth and
-  output type from an image.
- 
-  In reality, receiving data from the scanner at this point and formatting the buffers for each mode would 
-  be the appropriate way to go, and this is only a demonstration of the virtual scanning capability at the moment.
-  
-  The developer should modify this method when scanning from a USB, FireWire or network scanner.
+  LiDE 70: the scan is run by the canon_lide70 SANE backend through shim/lide70_scan.c. The backend scans the whole
+  area to a temp file before any data can be read, so there is no progress during head movement; rows are then
+  delivered to the client with the same three transfer modes as Apple's sample:
+    - overview data      (sendProgressNotificationsWithOverviewData): image data in each progress notification
+    - banded scan data   (sendProgressNotificationsWithScanData):     ICDAddBandInfoToNotificationDictionary
+    - file               (sendProgressNotificationsWithoutData):      ICA raw file, then saved as documentUTI
+  Rows are cropped/padded to exactly the width x height the client asked for, in case the backend rounds the area.
+  Black & white is scanned as 8-bit gray and thresholded here with ICAP_THRESHOLD (bit = 1 means white, as in the
+  sample). Offsets arrive in native-resolution units; width and height in pixels at the scan resolution.
 */
 
 - (ICAError)startScanningWithParams:(ICD_ScannerStartPB*)pb
 {
-    ICAError  err         = noErr;
-    BOOL      userCancel  = NO;
-    
-    //Scan requested DPI settings
-    double    xDPI = self.xResolution;
-    double    yDPI = self.yResolution;
+    ICAError            err             = noErr;
+    BOOL                userCancel      = NO;
+    double              xDPI            = self.xResolution;
+    double              yDPI            = self.yResolution;
+    double              native          = self.xNativeResolution;
+    BOOL                havePixelType   = ( [self getValueForKey:@"ICAP_PIXELTYPE"] != nil );
+    unsigned int        pixelType       = havePixelType ? self.pixelType : TWPT_RGB;
+    BOOL                bitonal         = ( pixelType == TWPT_BW ) || ( self.bitDepth == 1 && pixelType != TWPT_RGB );
+    BOOL                color           = ( pixelType == TWPT_RGB ) && !bitonal;
+    unsigned int        threshold       = [[self getValueForKey:@"ICAP_THRESHOLD"] unsignedIntValue];
+    unsigned int        scanImageWidth  = [[_scanImageSettings objectForKey:@"scanImageWidth"] unsignedIntValue];
+    unsigned int        scanImageHeight = [[_scanImageSettings objectForKey:@"scanImageHeight"] unsignedIntValue];
+    double              offsetX         = [[_scanImageSettings objectForKey:@"offsetX"] doubleValue];
+    double              offsetY         = [[_scanImageSettings objectForKey:@"offsetY"] doubleValue];
+    lide70_scan_request rq              = { 0 };
+    lide70_scan_format  fmt             = { 0 };
+    int                 status          = 0;
 
-    //512k will be used for each band unless overridden by band size settings from the client
-    double    maxBandByteSize = self.maxProgressBandSize;
-    
-    //Loadable test image
-    CFURLRef          fileRef     = CFURLCreateWithFileSystemPath(
-                                                    kCFAllocatorDefault,
-                                                    (CFStringRef)(self.sampleImageFilePath),
-                                                    kCFURLPOSIXPathStyle,
-                                                    0
-                                                );
-    
-    CGImageSourceRef  imageSrcRef = CGImageSourceCreateWithURL( fileRef, NULL );
+    if ( xDPI <= 0 )    xDPI = 75;
+    if ( yDPI <= 0 )    yDPI = xDPI;
+    if ( native <= 0 )  native = 1200;
+    if ( threshold == 0 || threshold > 255 ) threshold = 128;
 
-    // set up image io if we are doing final scan
-    NSDictionary*     metaData    = (NSMutableDictionary*)CGImageSourceCopyPropertiesAtIndex( imageSrcRef, 0, NULL );
-        
-    //Create a data provider so we can skip around the bitmap
-    CGDataProviderSequentialCallbacks scanCallbacks = {0, dpGetBytes, dpSkipBytes, dpRewind, dpReleaseProvider};
-    CGDataProviderRef                 scanDataProvider;
-    
-    //Grab our source images parameters so we can stretch.
-    //For now, we don't maintain any aspect ratio, but in the future we could figure out which aspect to clip to.
-    NSNumber* imageWidth  = [metaData objectForKey:@"PixelWidth"];
-    NSNumber* imageHeight = [metaData objectForKey:@"PixelHeight"];
-    
-    if( !( imageWidth && imageHeight ) )
+    // No area given (seen with some overview requests): scan the whole bed.
+    if ( scanImageWidth == 0 || scanImageHeight == 0 )
     {
-        
-        if( metaData )
-            [metaData release];
-        
-        if( fileRef )
-            CFRelease ( fileRef );
-        
-        if( imageSrcRef )
-            CFRelease ( imageSrcRef );
-        
+        offsetX = offsetY = 0;
+        scanImageWidth  = (unsigned int)( self.physicalWidth  / native * xDPI );
+        scanImageHeight = (unsigned int)( self.physicalHeight / native * yDPI );
+    }
+
+    rq.dpi      = (int)xDPI;
+    rq.mode     = color ? LIDE70_MODE_COLOR : LIDE70_MODE_GRAY;
+    rq.tl_x_mm  = offsetX / native * 25.4;
+    rq.tl_y_mm  = offsetY / native * 25.4;
+    // The backend truncates (br - tl) to whole pixels, so an exact N-pixel span can come back as N-1.
+    // Asking for half a pixel more makes the truncation land on N.
+    rq.br_x_mm  = rq.tl_x_mm + ( scanImageWidth  + 0.5 ) / xDPI * 25.4;
+    rq.br_y_mm  = rq.tl_y_mm + ( scanImageHeight + 0.5 ) / yDPI * 25.4;
+
+    Log( "LiDE70: scan %ux%u px at %.0fx%.0f dpi, offset %.0f,%.0f native; pixelType %u%s bitDepth %u threshold %u; "
+         "mode %s; transfer %s; UTI %s\n",
+         scanImageWidth, scanImageHeight, xDPI, yDPI, offsetX, offsetY, pixelType, havePixelType ? "" : " (default)",
+         self.bitDepth, threshold, color ? "color" : ( bitonal ? "b/w" : "gray" ),
+         self.sendProgressNotificationsWithOverviewData ? "overview" :
+         ( self.sendProgressNotificationsWithScanData ? "band data" : ( self.sendProgressNotificationsWithoutData ? "file" : "none" ) ),
+         [self.documentUTI UTF8String] ?: "-" );
+
+    // ---- run the scan (blocks while the head moves; holds the USB interface until lide70_scan_end)
+    status = lide70_scan_begin( _usbDeviceName, &rq, &fmt );
+
+    if ( status != LIDE70_GOOD )
+    {
+        Log( "LiDE70: scan failed to start: %s\n", lide70_status_name( status ) );
+        return ( status == LIDE70_DEVICE_BUSY || status == LIDE70_IO_ERROR ) ? kICACommunicationErr : kICADeviceInternalErr;
+    }
+    Log( "LiDE70: backend returned %dx%d px at %d dpi, %d bytes/line, %d channel(s)\n",
+         fmt.pixels_per_line, fmt.lines, fmt.dpi, fmt.bytes_per_line, fmt.channels );
+
+    // ---- output format sent to the client
+    unsigned int    bitsPerComponentIgnored = 0, bitsPerPixelIgnored = 0;
+    CGColorSpaceRef newcolorspace       = [self newColorspaceForCurrentFunctionalUnitSettings:&bitsPerComponentIgnored
+                                                                              andBitsPerPixel:&bitsPerPixelIgnored];
+    if ( !newcolorspace )   // pixel type the sample's helper does not know: fall back to a device space
+        newcolorspace = color ? CGColorSpaceCreateDeviceRGB() : CGColorSpaceCreateDeviceGray();
+
+    int             numComponents       = color ? 3 : 1;
+    int             imageBitsPerComponent = bitonal ? 1 : 8;
+    int             imageBitsPerPixel   = bitonal ? 1 : 8 * numComponents;
+    int             imageBytesPerRow    = bitonal ? ( scanImageWidth + 7 ) / 8 : scanImageWidth * numComponents;
+    ICScannerPixelDataType pixelDataType = color ? ICScannerPixelDataTypeRGB : ICScannerPixelDataTypeGray;
+    double          maxBandByteSize     = self.maxProgressBandSize > 0 ? self.maxProgressBandSize : 512 * 1024;
+    int             rowsPerBand         = ( imageBytesPerRow >= maxBandByteSize ) ? 1 : (int)( maxBandByteSize / imageBytesPerRow );
+    UInt8*          band                = malloc( (size_t)imageBytesPerRow * rowsPerBand );
+    UInt8*          line                = malloc( (size_t)fmt.bytes_per_line );
+    int             srcChannels         = fmt.channels;
+    int             copyPixels          = MIN( (int)scanImageWidth, fmt.pixels_per_line );
+    BOOL            sourceDone          = NO;
+    int             fillPoint           = 0;
+    int             rowInBand           = 0;
+
+    if ( !band || !line )
+    {
+        free( band );
+        free( line );
+        CGColorSpaceRelease( newcolorspace );
+        lide70_scan_end();
         return kICADeviceInternalErr;
     }
-    
-    double        scanImageDPIRatioWidth  =  ( ( self.physicalWidth / self.xNativeResolution ) * (double)xDPI);
-    double        scanImageDPIRatioHeight =  ( ( self.physicalHeight / self.yNativeResolution ) * (double)yDPI);
- 
-    unsigned int  scanImageWidth          = [[_scanImageSettings objectForKey:@"scanImageWidth"] unsignedIntValue];
-    unsigned int  scanImageHeight         = [[_scanImageSettings objectForKey:@"scanImageHeight"] unsignedIntValue];
-    
-    // If we wanted to specify more than one scan here for document feeder, we could do it as an example.
-    int documentFeederScans = 2;
 
-    do
+    if ( srcChannels != numComponents )
+        Log( "LiDE70: unexpected backend channel count %d (want %d)\n", srcChannels, numComponents );
+    if ( fmt.pixels_per_line != (int)scanImageWidth || fmt.lines != (int)scanImageHeight )
+        Log( "LiDE70: backend size differs from request; cropping/padding to %ux%u\n", scanImageWidth, scanImageHeight );
+
+    // ---- file transfer: raw file with header
+    if ( self.sendProgressNotificationsWithoutData )
     {
-        CGImageRef  imageRefFinal = NULL;
+        [self setOutputFilePath];
 
-        // Set up image io if we are doing the final scan
-        if ( !self.sendProgressNotificationsWithOverviewData )
+        if ( ![self openRawFileForWriting] )
         {
-            if( self.sendProgressNotificationsWithoutData )
+            Log( "LiDE70: cannot open raw image file\n" );
+            free( band );
+            free( line );
+            CGColorSpaceRelease( newcolorspace );
+            lide70_scan_end();
+            return kICADeviceInternalErr;
+        }
+
+        ICARawFileHeader h = { 0 };
+
+        h.imageDataOffset       = sizeof(ICARawFileHeader);
+        h.version               = 1;
+        h.imageWidth            = scanImageWidth;
+        h.imageHeight           = scanImageHeight;
+        h.bytesPerRow           = imageBytesPerRow;
+        h.bitsPerComponent      = imageBitsPerComponent;
+        h.bitsPerPixel          = imageBitsPerPixel;
+        h.numberOfComponents    = numComponents;
+        h.cgColorSpaceModel     = CGColorSpaceGetModel( newcolorspace );
+        h.bitmapInfo            = kCGImageAlphaNone;
+        h.dpi                   = xDPI;
+        h.orientation           = [self.scannedImageMetadata objectForKey:@"Orientation"] ?
+                                  [[self.scannedImageMetadata objectForKey:@"Orientation"] intValue] : 1;
+        strlcpy( h.colorSyncModeStr, self.colorSyncMode ? [self.colorSyncMode UTF8String] : "", sizeof(h.colorSyncModeStr) );
+
+        [self writeRawFileWithBuffer:(char*)&h ofSize:sizeof(ICARawFileHeader)];
+    }
+
+    // ---- rows: read from the backend, convert into the band, deliver full bands
+    for ( unsigned int row = 0; row < scanImageHeight && !userCancel; ++row )
+    {
+        int have = 0;
+
+        while ( !sourceDone && have < fmt.bytes_per_line )
+        {
+            int got = 0;
+
+            status = lide70_scan_read( line + have, fmt.bytes_per_line - have, &got );
+            if ( status == LIDE70_GOOD )
+                have += got;
+            else
             {
-                // Set a unique file path for the new scan file including the temp ICA raw file as backing store
-                [self setOutputFilePath];
-                // Create a raw image data file
-                [self openRawFileForWriting];
+                if ( status != LIDE70_EOF )
+                {
+                    Log( "LiDE70: read error at row %u: %s\n", row, lide70_status_name( status ) );
+                    err = kICACommunicationErr;
+                }
+                else if ( row < (unsigned int)fmt.lines )
+                    Log( "LiDE70: backend data ended at row %u of %d; padding\n", row, fmt.lines );
+                sourceDone = YES;
             }
-            
-            // Compute the points and offsets using the original image to create a subimage to pull from.
-            double xOffsetRatio = scanImageDPIRatioWidth / [imageWidth doubleValue];
-            double yOffsetRatio = scanImageDPIRatioHeight / [imageHeight doubleValue];
-            
-            int xCoord =  xDPI * ( [[_scanImageSettings objectForKey:@"offsetX"] doubleValue] / self.xNativeResolution );
-            int yCoord =  yDPI * ( [[_scanImageSettings objectForKey:@"offsetY"] doubleValue] / self.yNativeResolution );
-            
-            CGImageRef tempImage = ( imageSrcRef ? CGImageSourceCreateImageAtIndex( imageSrcRef, 0, nil ) : nil );
-            
-            if( tempImage )
+        }
+        if ( err != noErr )
+            break;
+        if ( have < fmt.bytes_per_line )        // short or missing row: white
+            memset( line + have, 0xff, fmt.bytes_per_line - have );
+
+        UInt8* out = band + (size_t)rowInBand * imageBytesPerRow;
+
+        if ( bitonal )
+        {
+            memset( out, 0, imageBytesPerRow );
+            for ( unsigned int x = 0; x < scanImageWidth; ++x )
             {
-                imageRefFinal = CGImageCreateWithImageInRect(
-                                                        tempImage, 
-                                                        CGRectMake( 
-                                                            xCoord / xOffsetRatio, 
-                                                            yCoord / yOffsetRatio, 
-                                                            scanImageWidth / xOffsetRatio, 
-                                                            scanImageHeight / yOffsetRatio
-                                                        ) 
-                                                    );
-                
-                CGImageRelease( tempImage );
+                unsigned int v = ( (int)x < copyPixels ) ? line[x * srcChannels] : 0xff;
+
+                if ( v > threshold )
+                    out[x >> 3] |= 0x80 >> ( x & 7 );
             }
         }
         else
         {
-            //If we are doing an overview scan we don't need to bother with the above, because the entire image will be transferred 
-            //regardless of subsampling.
-            imageRefFinal = ( imageSrcRef ? CGImageSourceCreateImageAtIndex( imageSrcRef, 0, nil ) : nil );
-        }
-        
-        //If something happened to the image when we were doing all of the above, bail!
-        if( !imageRefFinal )
-        {
-            if( metaData )
-                [metaData release];
-            
-            if( fileRef )
-                CFRelease ( fileRef );
-            
-            if( imageSrcRef )
-                CFRelease ( imageSrcRef );
-            
-            return kICADeviceInternalErr;
-        }
-        
-        
-        // Fake warmup status
-        unsigned int warmupTestTime = 0500000L;
-        
-        if( warmupTestTime > 0 )
-        {
-            [self showWarmUpMsg];
-            // Warming up those transistors and tubes.
-            usleep(warmupTestTime);		
-            [self doneWarmUpMsg];
+            size_t n = (size_t)copyPixels * numComponents;
+
+            if ( srcChannels == numComponents )
+                memcpy( out, line, n );
+            else    // should not happen; take the first channel of each pixel
+                for ( int x = 0; x < copyPixels; ++x )
+                    for ( int c = 0; c < numComponents; ++c )
+                        out[x * numComponents + c] = line[x * srcChannels];
+            if ( n < (size_t)imageBytesPerRow )
+                memset( out + n, 0xff, imageBytesPerRow - n );
         }
 
-        //Setup bitmap context information
-        CGContextRef  bitmapContext = nil;  
-        
-        // Create a color space profile based on the settings that were passed in, retrieve bit settings
-        unsigned int bitsPerComponent           = 0;
-        unsigned int bitsPerPixel               = 0;
-        
-        CGColorSpaceRef newcolorspace           = [self newColorspaceForCurrentFunctionalUnitSettings:&bitsPerComponent andBitsPerPixel:&bitsPerPixel];
-        CGColorSpaceModel colorSpaceModel       = CGColorSpaceGetModel( newcolorspace );
-        
-        int           bytesPerComponent         = bitsPerComponent/8;    
-        int           numComponents             = ( bitsPerPixel / bitsPerComponent );
-        CGImageAlphaInfo    alphaInfo           = kCGImageAlphaNone;
-        
-        ICScannerPixelDataType pixelDataType    = ICScannerPixelDataTypeRGB;
-        
-        switch ( colorSpaceModel )
-        {
-            case kCGColorSpaceModelMonochrome:
-            {
-                alphaInfo       = kCGImageAlphaNone;
-                pixelDataType   = ICScannerPixelDataTypeGray;
-            }
-                break;
-                
-            case kCGColorSpaceModelCMYK:
-            {
-                alphaInfo       = kCGImageAlphaNone;
-                pixelDataType   = ICScannerPixelDataTypeCMYK;
-            }            
-                break;
-                
-            case kCGColorSpaceModelRGB:
-            default:
-            {
-                alphaInfo       = kCGImageAlphaPremultipliedLast;
-                pixelDataType   = ICScannerPixelDataTypeRGB;
-            }
-                break;
-        }
-        
-        // Setting up the bitmap context variables
-        unsigned int  bitmapBytesPerRow         = scanImageWidth * ( numComponents*bytesPerComponent + ( ( alphaInfo == kCGImageAlphaNone ) ? 0:1 )*bytesPerComponent );
-        int           bitmapRowsPerBand         = ( bitmapBytesPerRow >= maxBandByteSize ) ? 1 : ( maxBandByteSize / bitmapBytesPerRow );
-        int           bitmapNumBands            = scanImageHeight / bitmapRowsPerBand;
-        int           bitmapLastBandSize        = scanImageHeight % bitmapRowsPerBand;
-        unsigned int  bitmapBytesPerBand        = bitmapBytesPerRow * bitmapRowsPerBand;
-        UInt8*        bitmapImage               = nil;
-        
-        // Setting up image context variables
-        int           imageBytesPerRow          = 0;
-        int           imageBitsPerPixel         = 0;
-        int           imageBitsPerComponent     = 0;
-        int           imageSkipBits             = 0;
-        int           imageContextRowsPerBand   = 0; 
-        int           imageBlackThreshold       = 0x80;
-        
-        if ( self.bitDepth != 1 )
-        {
-            imageBytesPerRow        = ( scanImageWidth * numComponents * ( bytesPerComponent ) );
-            imageBitsPerPixel       = bitsPerPixel;
-            imageBitsPerComponent   = bitsPerComponent;
-        }
-        else 
-        {
-            imageBytesPerRow = ( scanImageWidth * numComponents * ( bytesPerComponent ) ) / 8;
-            imageSkipBits    = ( scanImageWidth * numComponents * ( bytesPerComponent ) ) % 8;
-            
-            if( imageSkipBits  > 1 )
-                imageBytesPerRow++;
-           
-            imageBitsPerPixel       = 1;
-            imageBitsPerComponent   = 1;
-        }
-        
-        bitmapImage   = malloc( bitmapBytesPerBand ); 
-        
-        //Start point for the Translate needs to be in the negative y coordinate starting at the top of the image
-        int startPoint = scanImageHeight*-1;
-        
-        //Start point for the Image to be sent to ImageCapture Extension needs to be in the positive coordinate starting at zero
-        int fillPoint  = 0;
-        
-        // write ica raw file image header
-        if ( self.sendProgressNotificationsWithoutData )
-        {
-            ICARawFileHeader* h = (ICARawFileHeader *)bitmapImage;
+        if ( ++rowInBand < rowsPerBand && row + 1 < scanImageHeight )
+            continue;
 
-            h->imageDataOffset      = sizeof(ICARawFileHeader);
-            h->version              = 1;
-            h->imageWidth           = scanImageWidth;
-            h->imageHeight          = scanImageHeight;
-            h->bytesPerRow          = imageBytesPerRow;
-            h->bitsPerComponent     = imageBitsPerComponent;
-            h->bitsPerPixel         = imageBitsPerPixel;     
-            h->numberOfComponents   = numComponents;
-            h->cgColorSpaceModel    = CGColorSpaceGetModel(newcolorspace);
-            h->bitmapInfo           = kCGImageAlphaNone;
-            h->dpi                  = xDPI;
-            h->orientation          = [self.scannedImageMetadata objectForKey:@"Orientation"] ? 
-                                      [[self.scannedImageMetadata objectForKey:@"Orientation"] intValue] : 1;
-            strlcpy( h->colorSyncModeStr, [self.colorSyncMode UTF8String], sizeof(h->colorSyncModeStr) );
-            
-            [self writeRawFileWithBuffer:(char*)bitmapImage ofSize:sizeof(ICARawFileHeader)];
-        }
-        
-        for ( int i = bitmapNumBands; (i >= 0 && !userCancel); --i )
-        {
-            if( ( i == bitmapNumBands ) && ( bitmapNumBands != 0 ) )
-            {
-                bitmapContext = CGBitmapContextCreate( 
-                                                     bitmapImage, 
-                                                     scanImageWidth, 
-                                                     bitmapRowsPerBand, 
-                                                     bitsPerComponent,
-                                                     bitmapBytesPerRow, 
-                                                     newcolorspace,
-                                                     alphaInfo
-                                                     );
-                
-                imageContextRowsPerBand = bitmapRowsPerBand;
-            }
-            else if( ( bitmapLastBandSize > 1 ? 1 : 0 ) && i == 0 )
-            {
-                CGContextRelease( bitmapContext );
-                bitmapContext = CGBitmapContextCreate( 
-                                                      bitmapImage, 
-                                                      scanImageWidth, 
-                                                      bitmapLastBandSize, 
-                                                      bitsPerComponent,  
-                                                      bitmapBytesPerRow, 
-                                                      newcolorspace,
-                                                      alphaInfo
-                                                      );
-                
-                imageContextRowsPerBand = bitmapLastBandSize;
-            }
-               
-            
-            if ( bitmapContext )
-            {   
-                startPoint += imageContextRowsPerBand;
-                
-                CGContextSaveGState(bitmapContext);
-                CGRect drawRect = CGRectMake( 0, 0, scanImageWidth, scanImageHeight );
-                
-                CGContextTranslateCTM( bitmapContext, 0, startPoint );
-                CGContextClearRect( bitmapContext, drawRect ); 
-                CGContextDrawImage( bitmapContext, drawRect, imageRefFinal ); 
-                
-                //If there is an alpha channel, we have to fake like we're coming from a scanner and 
-                //remove it here.
-                if( ( kCGImageAlphaNone != alphaInfo ) )
-                {
-                    int offset = 0;
-                    int j = 0;
-                    
-                    for( j=numComponents*bytesPerComponent; j < (imageContextRowsPerBand*imageBytesPerRow); j+=numComponents*bytesPerComponent )
-                    {
-                        int k = 0;
-                        for( k = 0; k < numComponents*bytesPerComponent; k++)
-                            bitmapImage[j+k] = bitmapImage[j+k+bytesPerComponent+offset];
-                        offset+=bytesPerComponent;
-                    }
-                }
-                else if ( imageBitsPerPixel == 1 )
-                {
-                    int offset = 0;
-                    int j      = 0;
-                    int rowPos = 0;
-                    int inc    = 8;
-                    
-                    for ( j = 0; j < imageContextRowsPerBand*bitmapBytesPerRow; j+=inc )
-                    {
-                        char b = 0;
-                        for( int k = 0; k<8 && rowPos != bitmapBytesPerRow; k++ )
-                        {
-                            b += ( bitmapImage[k+j] > imageBlackThreshold ? 1 : 0 ) << 7-k;
-                            rowPos++;
-                        }
-                        if( rowPos == bitmapBytesPerRow )
-                        {
-                            if( imageSkipBits!=0 )
-                                inc = imageSkipBits;
-                            rowPos = 0;
-                        }
-                        else
-                            inc = 8;
-                        
-                        bitmapImage[offset]=b;
-                        offset++;
-                    }
-                }
-                
-                ICASendNotificationPB notePB        = {};
-                NSMutableDictionary*  notification  = [[NSMutableDictionary alloc] initWithCapacity:0];
-                
-                [notification setObject:[NSNumber numberWithUnsignedInt:_deviceObjectInfo->icaObject] forKey:(id)kICANotificationICAObjectKey];
-                [notification setObject:(id)kICANotificationTypeScanProgressStatus forKey:(id)kICANotificationTypeKey];
-
-                notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
-                
-                if ( self.sendProgressNotificationsWithOverviewData )
-                {
-                    ICDAddImageInfoToNotificationDictionary(
-                                          (CFMutableDictionaryRef)notification,
-                                          scanImageWidth,
-                                          scanImageHeight,
-                                          imageBytesPerRow, 
-                                          fillPoint,
-                                          imageContextRowsPerBand,
-                                          (imageBytesPerRow*imageContextRowsPerBand),
-                                          bitmapImage
-                                      );
-                }
-                else if ( self.sendProgressNotificationsWithScanData )
-                {
-                    void    *dlHandle;
-                     
-                    // Open ICADevices to check and see if we can use the banded data function.
-                    // This will ensure interoperability with both 10.6 and 10.7+ 
-                    dlHandle = dlopen("/System/Library/Frameworks/ICADevices.framework/ICADevices", RTLD_LOCAL | RTLD_LAZY );
-                    
-                    if ( NULL != dlHandle ) 
-                    {
-                        int       (*fPtr)(CFMutableDictionaryRef, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, ICScannerPixelDataType, unsigned int, int, unsigned int, unsigned int, void*);
-                        *(void **)(&fPtr) = dlsym( dlHandle, "ICDAddBandInfoToNotificationDictionary");
-                        
-                        if( NULL != fPtr )
-                        {
-                            (*fPtr)( (CFMutableDictionaryRef)notification,
-                                    scanImageWidth,
-                                    scanImageHeight,
-                                    imageBitsPerPixel,
-                                    imageBitsPerComponent,
-                                    numComponents,
-                                    0,
-                                    pixelDataType,
-                                    imageBytesPerRow, 
-                                    fillPoint,
-                                    imageContextRowsPerBand,
-                                    (imageBytesPerRow*imageContextRowsPerBand),
-                                    bitmapImage
-                                    );
-                        }
-                        dlclose(dlHandle);
-                    }
-                }
-                else if ( self.sendProgressNotificationsWithoutData )
-                {
-                    ICDAddImageInfoToNotificationDictionary( 
-                                          (CFMutableDictionaryRef)notification,
-                                          scanImageWidth,
-                                          scanImageHeight,
-                                          imageBytesPerRow, 
-                                          fillPoint,
-                                          imageContextRowsPerBand, 
-                                          0, 
-                                          NULL
-                                      );
-                                      
-                    // write band to raw image file
-                    [self writeRawFileWithBuffer:(char*)bitmapImage ofSize:(imageBytesPerRow*imageContextRowsPerBand)];
-                    if( i == 0 )
-                        [self closeRawFile];
-                }
-            
-                if ( ICDSendNotificationAndWaitForReply( &notePB ) == noErr )
-                {
-                    userCancel = (notePB.replyCode == userCanceledErr);
-                }
-                
-                [notification release];
-                fillPoint+= (imageContextRowsPerBand);
-                CGContextRestoreGState(bitmapContext);
-            }        
-        }
-        // set up image io if we are doing final scan and we are generating real image file ( not ICA RAW file ).
-        if ( self.sendProgressNotificationsWithoutData && (self.isDocumentUTI_ICA_RAW == NO) )
-        {
-            scanDataProvider = CGDataProviderCreateSequential( self, &scanCallbacks );
-            
-            _rawCGImageRef = CGImageCreate(
-                                           scanImageWidth, 
-                                           scanImageHeight,
-                                           imageBitsPerComponent, 
-                                           imageBitsPerPixel, 
-                                           imageBytesPerRow,
-                                           newcolorspace,
-                                           kCGImageAlphaNone,
-                                           scanDataProvider,
-                                           NULL,
-                                           false,
-                                           kCGRenderingIntentDefault
-                                           );
-            
-            if ( NULL == _rawCGImageRef )
-            {
-                printf("    ERROR - CGImageCreate failed\n"); 
-            }
-            
-            CGDataProviderRelease( scanDataProvider );
-            
-            // user did not cancel
-            if ( !userCancel )
-            {
-                // write image file via data provider processing raw image data file                
-                [self saveImageWithWidth: scanImageWidth andHeight:scanImageHeight];
-            }
-            
-            if (_rawCGImageRef) 
-            {
-                CGImageRelease(_rawCGImageRef);
-                _rawCGImageRef = NULL;
-            }
-        }
-        
-        if ( bitmapContext )
-            CGContextRelease( bitmapContext );
-     
-        //Send the page done notifications.
+        // deliver this band
         ICASendNotificationPB notePB        = {};
         NSMutableDictionary*  notification  = [[NSMutableDictionary alloc] initWithCapacity:0];
-        
-        // send page done notification
+
         [notification setObject:[NSNumber numberWithUnsignedInt:_deviceObjectInfo->icaObject] forKey:(id)kICANotificationICAObjectKey];
-        [notification setObject:(id)kICANotificationTypeScannerPageDone forKey:(id)kICANotificationTypeKey];
-        
-        if ( self.sendProgressNotificationsWithoutData )
-            CFDictionaryAddValue( (CFMutableDictionaryRef)notification, kICANotificationScannerDocumentNameKey, self.documentFilePath );
-        
+        [notification setObject:(id)kICANotificationTypeScanProgressStatus forKey:(id)kICANotificationTypeKey];
         notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
-        ICDSendNotification( &notePB );
-        [notification release];
-        documentFeederScans--;
-        
-        free( bitmapImage );
-        
-        // If the client is a network client trigger a new object created for every page that has been scanned
-        if ( ( !userCancel ) && 
-             ( self.documentFolderPath == NULL ) && 
-             ( self.sendProgressNotificationsWithoutData ) )
+
+        if ( self.sendProgressNotificationsWithOverviewData )
         {
-            ScannedImage* newImage = [[ScannedImage alloc] initWithFilePath:self.documentFilePath scannerObject:self imageWidth:scanImageWidth imageHeight:scanImageHeight];
-                        
-            if ( newImage )
+            ICDAddImageInfoToNotificationDictionary( (CFMutableDictionaryRef)notification, scanImageWidth, scanImageHeight,
+                                                     imageBytesPerRow, fillPoint, rowInBand,
+                                                     imageBytesPerRow * rowInBand, band );
+        }
+        else if ( self.sendProgressNotificationsWithScanData )
+        {
+            ICDAddBandInfoToNotificationDictionary( (CFMutableDictionaryRef)notification, scanImageWidth, scanImageHeight,
+                                                    imageBitsPerPixel, imageBitsPerComponent, numComponents, 0,
+                                                    pixelDataType, imageBytesPerRow, fillPoint, rowInBand,
+                                                    imageBytesPerRow * rowInBand, band );
+        }
+        else if ( self.sendProgressNotificationsWithoutData )
+        {
+            ICDAddImageInfoToNotificationDictionary( (CFMutableDictionaryRef)notification, scanImageWidth, scanImageHeight,
+                                                     imageBytesPerRow, fillPoint, rowInBand, 0, NULL );
+            [self writeRawFileWithBuffer:(char*)band ofSize:(size_t)imageBytesPerRow * rowInBand];
+        }
+
+        if ( ICDSendNotificationAndWaitForReply( &notePB ) == noErr )
+            userCancel = ( notePB.replyCode == userCanceledErr );
+
+        [notification release];
+        fillPoint += rowInBand;
+        rowInBand  = 0;
+    }
+
+    // Release the scanner (drains unread data so the backend deletes its temp file).
+    lide70_scan_end();
+    free( line );
+    free( band );
+    Log( "LiDE70: delivered %d rows%s%s\n", fillPoint, userCancel ? " (cancelled)" : "", err ? " (error)" : "" );
+
+    // ---- file transfer: finish the document
+    if ( self.sendProgressNotificationsWithoutData )
+    {
+        [self closeRawFile];
+
+        if ( self.isDocumentUTI_ICA_RAW == NO )
+        {
+            if ( !userCancel && err == noErr )
             {
-                ICAObject newICAObject = 0;
-                
-                [_scannedImages addObject:newImage];
-                [newImage release];
-            
-            
-                if ( ICDScannerNewObjectInfoCreated( _deviceObjectInfo, 0, &newICAObject ) == noErr )
+                CGDataProviderSequentialCallbacks scanCallbacks    = { 0, dpGetBytes, dpSkipBytes, dpRewind, dpReleaseProvider };
+                CGDataProviderRef                 scanDataProvider = CGDataProviderCreateSequential( self, &scanCallbacks );
+
+                _rawCGImageRef = CGImageCreate( scanImageWidth, scanImageHeight, imageBitsPerComponent, imageBitsPerPixel,
+                                                imageBytesPerRow, newcolorspace, (CGBitmapInfo)kCGImageAlphaNone,
+                                                scanDataProvider, NULL, false, kCGRenderingIntentDefault );
+                CGDataProviderRelease( scanDataProvider );
+
+                if ( _rawCGImageRef )
                 {
-                    newImage.icaObject = newICAObject;
-                    memset( &notePB, 0, sizeof(notePB) );
-                    notification = [[NSMutableDictionary alloc] initWithCapacity:0];
-                    [notification setObject:[NSNumber numberWithUnsignedInt:newICAObject] forKey:(id)kICANotificationICAObjectKey];
-                    [notification setObject:(id)kICANotificationTypeObjectAdded forKey:(id)kICANotificationTypeKey];
-                    
-                    notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
-                    ICDSendNotification( &notePB );
-                    [notification release];
+                    [self saveImageWithWidth:scanImageWidth andHeight:scanImageHeight];
+                    CGImageRelease( _rawCGImageRef );
+                    _rawCGImageRef = NULL;
                 }
                 else
                 {
-                    [_scannedImages removeObject:newImage];
+                    Log( "LiDE70: CGImageCreate failed\n" );
+                    err = kICADeviceInternalErr;
                 }
             }
+            unlink( _rawImageFileCachePath );
         }
-        
-        if( imageRefFinal )
-            CGImageRelease( imageRefFinal );
-        
-        if( newcolorspace )
-            CGColorSpaceRelease( newcolorspace );
-    } 
-    while ( ( [self.selectedFunctionalUnitTypeString isEqualToString:@"3"] ) && ( documentFeederScans > 0 ) && !userCancel );
-    
-    // send job done notification
-    ICASendNotificationPB notePB        = {};
-    NSMutableDictionary*  notification  = [[NSMutableDictionary alloc] initWithCapacity:0];
+    }
 
-    [notification setObject:[NSNumber numberWithUnsignedInt:_deviceObjectInfo->icaObject] forKey:(id)kICANotificationICAObjectKey];
-    [notification setObject:(id)kICANotificationTypeScannerScanDone forKey:(id)kICANotificationTypeKey];
+    CGColorSpaceRelease( newcolorspace );
 
-    notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
-    ICDSendNotification( &notePB );
-    [notification release];
-    
-    if ( metaData )
-        CFRelease( metaData );        
+    // ---- page done
+    {
+        ICASendNotificationPB notePB        = {};
+        NSMutableDictionary*  notification  = [[NSMutableDictionary alloc] initWithCapacity:0];
 
-    if ( fileRef )
-        CFRelease( fileRef );
-    
-    if ( imageSrcRef )
-        CFRelease( imageSrcRef );
-    
-	if ( userCancel )
-	{
-        printf("----> User Canceled Scan! \n");
-        ICASendNotificationPB notePB = {};
-        NSMutableDictionary*  notification = [NSMutableDictionary dictionaryWithCapacity:0]; 
-        
+        [notification setObject:[NSNumber numberWithUnsignedInt:_deviceObjectInfo->icaObject] forKey:(id)kICANotificationICAObjectKey];
+        [notification setObject:(id)kICANotificationTypeScannerPageDone forKey:(id)kICANotificationTypeKey];
+
+        if ( self.sendProgressNotificationsWithoutData && self.documentFilePath )
+            CFDictionaryAddValue( (CFMutableDictionaryRef)notification, kICANotificationScannerDocumentNameKey, self.documentFilePath );
+
+        notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
+        ICDSendNotification( &notePB );
+        [notification release];
+    }
+
+    // ---- remote (network) client: publish the scanned file as a new object
+    if ( !userCancel && err == noErr && self.documentFolderPath == NULL && self.sendProgressNotificationsWithoutData )
+    {
+        ScannedImage* newImage = [[ScannedImage alloc] initWithFilePath:self.documentFilePath scannerObject:self
+                                                             imageWidth:scanImageWidth imageHeight:scanImageHeight];
+        if ( newImage )
+        {
+            ICAObject newICAObject = 0;
+
+            [_scannedImages addObject:newImage];
+            [newImage release];
+
+            if ( ICDScannerNewObjectInfoCreated( _deviceObjectInfo, 0, &newICAObject ) == noErr )
+            {
+                ICASendNotificationPB notePB        = {};
+                NSMutableDictionary*  notification  = [[NSMutableDictionary alloc] initWithCapacity:0];
+
+                newImage.icaObject = newICAObject;
+                [notification setObject:[NSNumber numberWithUnsignedInt:newICAObject] forKey:(id)kICANotificationICAObjectKey];
+                [notification setObject:(id)kICANotificationTypeObjectAdded forKey:(id)kICANotificationTypeKey];
+                notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
+                ICDSendNotification( &notePB );
+                [notification release];
+            }
+            else
+                [_scannedImages removeObject:newImage];
+        }
+    }
+
+    // ---- job done
+    {
+        ICASendNotificationPB notePB        = {};
+        NSMutableDictionary*  notification  = [[NSMutableDictionary alloc] initWithCapacity:0];
+
+        [notification setObject:[NSNumber numberWithUnsignedInt:_deviceObjectInfo->icaObject] forKey:(id)kICANotificationICAObjectKey];
+        [notification setObject:(id)kICANotificationTypeScannerScanDone forKey:(id)kICANotificationTypeKey];
+        notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
+        ICDSendNotification( &notePB );
+        [notification release];
+    }
+
+    if ( userCancel )
+    {
+        ICASendNotificationPB notePB        = {};
+        NSMutableDictionary*  notification  = [NSMutableDictionary dictionaryWithCapacity:0];
+
         [notification setObject:[NSNumber numberWithUnsignedInt:_deviceObjectInfo->icaObject] forKey:(id)kICANotificationICAObjectKey];
         [notification setObject:(id)kICANotificationTypeTransactionCanceled forKey:(id)kICANotificationTypeKey];
-        
         notePB.notificationDictionary = (CFMutableDictionaryRef)notification;
         err = ICDSendNotification( &notePB );
-	}
-    
-bail:
+    }
+
     return err;
-    
 }
 
 #pragma mark -
@@ -1653,6 +1445,7 @@ bail:
     [self setValueForKey:@"ICAP_YRESOLUTION" fromDictionary:dict];
     [self setValueForKey:@"ICAP_XSCALING" fromDictionary:dict];
     [self setValueForKey:@"ICAP_YSCALING" fromDictionary:dict];
+    [self setValueForKey:@"ICAP_THRESHOLD" fromDictionary:dict];    // used for black & white scans
     [self setValuesForVendorFeaturesFromDictionary:dict];
 }
 
