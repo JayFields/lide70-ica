@@ -25,6 +25,7 @@ import LiDE70C
 import CoreGraphics
 import Foundation
 import ImageCaptureCore
+import ShadingCalibration
 import TWAIN
 
 /// The client's reply to a progress notification when the user pressed Cancel.
@@ -46,6 +47,9 @@ private struct ScanPlan {
     let xDPI: Double
     let color: Bool, bitonal: Bool
     let threshold: Int
+    /// White reference for this resolution, if `lide70-calibrate` has been run. With one, the backend scans
+    /// linear color and each row is corrected here; without, the backend's own gamma (and gray) is used.
+    let shading: ShadingCalibration.Reference?
     var output: OutputFormat {
         OutputFormat(width: width, components: color ? 3 : 1, bitsPerComponent: bitonal ? 1 : 8)
     }
@@ -125,18 +129,27 @@ extension LiDE70Device {
                    settings.pixelType == nil ? " (default)" : "", settings.bitDepth, threshold,
                    color ? "color" : bitonal ? "b/w" : "gray", transfer, r.documentUTI ?? "-"))
 
+        // Shading calibration, reloaded every scan so a new calibration takes effect without relaunching.
+        let shading = ShadingCalibration.load()?.reference(dpi: Int(xDPI))
+        if shading == nil {
+            log("LiDE70: no shading calibration for \(Int(xDPI)) dpi (run lide70-calibrate); colors and "
+                + "evenness are uncorrected")
+        }
+
         // Area in mm. The backend truncates (br - tl) to whole pixels, so an exact N-pixel span can come back as
         // N-1; asking for half a pixel more makes the truncation land on N.
         var rq = lide70_scan_request()
         rq.dpi = Int32(xDPI)
-        rq.mode = Int32(color ? LIDE70_MODE_COLOR : LIDE70_MODE_GRAY)
+        // Calibrated scans are always linear color from the backend; gray is made after correction.
+        rq.mode = Int32(color || shading != nil ? LIDE70_MODE_COLOR : LIDE70_MODE_GRAY)
+        rq.linear = shading != nil ? 1 : 0
         rq.tl_x_mm = offsetX / native * 25.4
         rq.tl_y_mm = offsetY / native * 25.4
         rq.br_x_mm = rq.tl_x_mm + (Double(width) + 0.5) / xDPI * 25.4
         rq.br_y_mm = rq.tl_y_mm + (Double(height) + 0.5) / yDPI * 25.4
 
         return ScanPlan(backendRequest: rq, width: width, height: height, xDPI: xDPI, color: color,
-                        bitonal: bitonal, threshold: threshold)
+                        bitonal: bitonal, threshold: threshold, shading: shading)
     }
 
     /// Delivers the streaming scan and writes the document, if the client asked for one.
@@ -160,9 +173,15 @@ extension LiDE70Device {
                                  bytesPerRow: out.bytesPerRow, colorSpace: colorSpace, dpi: plan.xDPI, request: r)
         }
 
+        // Shading correction for this scan's width and position on the bed.
+        let corrector = plan.shading.map {
+            RowCorrector(reference: $0, firstColumn: Int(fmt.first_column), width: Int(fmt.pixels_per_line))
+        }
+        if corrector != nil { log("LiDE70: applying shading calibration (first column \(fmt.first_column))") }
+
         // Read rows as they are scanned, convert them into bands, and deliver each full band.
         let delivery = deliverRows(r, from: fmt, as: out, height: height, threshold: plan.threshold,
-                                   document: document)
+                                   corrector: corrector, document: document)
 
         // Release the scanner before the (possibly slow) image conversion.
         lide70_scan_end()
@@ -187,7 +206,7 @@ extension LiDE70Device {
     // MARK: - Row delivery
 
     private func deliverRows(_ r: ScanRequest, from fmt: lide70_scan_format, as out: OutputFormat, height: Int,
-                             threshold: Int, document: DocumentWriter?)
+                             threshold: Int, corrector: RowCorrector?, document: DocumentWriter?)
         -> (rows: Int, cancelled: Bool, error: ICAError) {
 
         let rowsPerBand = max(1, r.maxBandBytes / out.bytesPerRow)
@@ -199,8 +218,16 @@ extension LiDE70Device {
         var fillPoint = 0           // first row of the current band
         var rowInBand = 0
 
-        if srcChannels != out.components {
+        // The backend sends color for color scans, and also for calibrated gray/black & white scans (which are
+        // averaged here after correction); uncalibrated gray comes from the backend as one channel.
+        if srcChannels != out.components && !(srcChannels == 3 && out.components == 1) {
             log("LiDE70: unexpected backend channel count \(srcChannels) (want \(out.components))")
+        }
+
+        /// Gray value of backend pixel `x`: the average of R, G and B (as the backend computes gray), or the
+        /// single channel.
+        func gray(_ line: [UInt8], _ x: Int) -> Int {
+            srcChannels == 3 ? (Int(line[3 * x]) + Int(line[3 * x + 1]) + Int(line[3 * x + 2])) / 3 : Int(line[x])
         }
 
         for row in 0..<height {
@@ -227,27 +254,32 @@ extension LiDE70Device {
             }
             for i in have..<line.count { line[i] = 0xff }
 
-            // 2. Convert it into the band.
+            // 2. Shading correction (linear rows to corrected, gamma-encoded RGB).
+            if let corrector { line.withUnsafeMutableBufferPointer { corrector.apply($0) } }
+
+            // 3. Convert it into the band.
             let start = rowInBand * out.bytesPerRow
             if out.bitsPerComponent == 1 {
                 for i in start..<start + out.bytesPerRow { band[i] = 0 }
                 for x in 0..<out.width {
-                    let v = x < copyPixels ? Int(line[x * srcChannels]) : 0xff
+                    let v = x < copyPixels ? gray(line, x) : 0xff
                     if v > threshold { band[start + (x >> 3)] |= UInt8(0x80 >> (x & 7)) }
+                }
+            } else if out.components == 1 {
+                for x in 0..<out.width {
+                    band[start + x] = x < copyPixels ? UInt8(gray(line, x)) : 0xff     // white beyond its width
                 }
             } else {
                 for x in 0..<out.width {
-                    for c in 0..<out.components {
-                        // backend pixel (first channel if the layouts differ), white beyond its width
-                        let src = srcChannels == out.components ? x * srcChannels + c : x * srcChannels
-                        band[start + x * out.components + c] = x < copyPixels ? line[src] : 0xff
+                    for c in 0..<3 {
+                        band[start + x * 3 + c] = x < copyPixels ? line[x * 3 + c] : 0xff
                     }
                 }
             }
             rowInBand += 1
             if rowInBand < rowsPerBand && row + 1 < height { continue }
 
-            // 3. Deliver the band. The reply says whether the user has cancelled.
+            // 4. Deliver the band. The reply says whether the user has cancelled.
             let rows = rowInBand
             let reply = sendNotification(kICANotificationTypeScanProgressStatus, object: icaObject,
                                          waitForReply: true) { note in

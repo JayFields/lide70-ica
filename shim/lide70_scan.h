@@ -28,6 +28,7 @@ typedef struct
   int    mode;                /* LIDE70_MODE_* */
   double tl_x_mm, tl_y_mm;    /* clamped to the scan bed */
   double br_x_mm, br_y_mm;
+  int    linear;              /* 1: no gamma, the sensor's linear values (for calibration) */
 } lide70_scan_request;
 
 typedef struct
@@ -37,11 +38,16 @@ typedef struct
   int lines;
   int bytes_per_line;
   int channels;               /* 3 = RGB, 1 = gray; 8 bits per channel */
+  int first_column;           /* sensor column of the image's column 0, counted at `dpi` from
+                                 the left edge of the bed (a full-width scan starts at 0) */
 } lide70_scan_format;
 
 /* Scan bed limits in mm, from the backend's option ranges. */
 #define LIDE70_BED_WIDTH_MM   (5104 * 25.4 / 600)
 #define LIDE70_BED_HEIGHT_MM  297.0
+/* The same as constants, which Swift can import (it skips macros that are expressions). */
+static const double lide70_bed_width_mm = LIDE70_BED_WIDTH_MM;
+static const double lide70_bed_height_mm = LIDE70_BED_HEIGHT_MM;
 
 /* Opens `device` ("libusb:BUS:ADDR"), applies the request, fills in the image
    format, and starts the scan on a background thread. Returns at once with

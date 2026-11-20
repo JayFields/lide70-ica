@@ -25,6 +25,7 @@ void sane_canon_lide70_cancel (SANE_Handle);
 SANE_String_Const sane_strstatus (SANE_Status);
 void canon_lide70_set_rows_hook (void (*hook) (const unsigned char *, size_t));
 void canon_lide70_clear_cancel (void);
+void canon_lide70_set_linear_gamma (int on);
 
 static int inited;
 static SANE_Handle handle;          /* open device, from start until end */
@@ -170,6 +171,16 @@ lide70_scan_start (const char *device, const lide70_scan_request *rq, lide70_sca
   fmt->lines = p.lines;
   fmt->bytes_per_line = p.bytes_per_line;
   fmt->channels = p.format == SANE_FRAME_RGB ? 3 : 1;
+  /* The left edge in 600-dpi units, as the backend computes it
+     (CANON_set_scan_parameters), scaled to the scan resolution. Below 600
+     dpi the chip samples every (600/dpi)th sensor column starting at that
+     edge, so the result can fall between two columns of a full-width scan:
+     round to the nearest (checked with lide70-calibrate --verify). */
+  {
+    int x1 = (int) (SANE_UNFIX (tlx) / 25.4 * 600);
+    fmt->first_column = (x1 * dpi + 300) / 600;
+  }
+  canon_lide70_set_linear_gamma (rq->linear);
 
   pthread_mutex_lock (&lock);
   head = tail = 0;

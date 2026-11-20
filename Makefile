@@ -44,8 +44,8 @@ $(O):
 # Swift executable imports it as `import LiDE70C`. Package.swift's platform version should match MACOS_MIN.
 # This rule wraps the executable in an app bundle.
 MODULE       = $(O)/LiDE70Scanner.app
-MOD_SRCS     = Package.swift $(wildcard ica/Sources/*.swift) $(wildcard shim/*.[ch]) \
-               backend/canon_lide70.c backend/canon_lide70-common.c
+MOD_SRCS     = Package.swift $(wildcard ica/Sources/*.swift) $(wildcard ica/Calibration/*.swift) \
+               $(wildcard shim/*.[ch]) backend/canon_lide70.c backend/canon_lide70-common.c
 MOD_RES      = ica/Resources/DeviceInfo.plist ica/Resources/DeviceMatchingInfo.plist \
                ica/Resources/ScannerProperties.plist
 
@@ -61,6 +61,12 @@ $(MODULE): $(MOD_SRCS) ica/Info.plist $(MOD_RES)
 	printf 'APPL????' > $@/Contents/PkgInfo
 	cp $(MOD_RES) $@/Contents/Resources/
 	codesign --force --sign - $@
+
+# Shading calibration: scans the white lid at each resolution and saves the references the module uses.
+# Close the lid with nothing on the glass. Pass options with ARGS, e.g. make calibrate ARGS="--dpi 300 --verify".
+calibrate:
+	swift build -c release --product lide70-calibrate
+	"$$(swift build -c release --show-bin-path)/lide70-calibrate" $(ARGS)
 
 # Install/uninstall only copy (no build dependency), so `sudo make install` never builds as root.
 # Run `make module` first. icdd launches the module when Image Capture selects the scanner.
@@ -78,4 +84,4 @@ uninstall:
 clean:
 	rm -rf $(O) $(TOOLS)
 
-.PHONY: all clean module install uninstall
+.PHONY: all clean module calibrate install uninstall

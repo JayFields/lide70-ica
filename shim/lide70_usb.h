@@ -16,6 +16,10 @@ int lide70_usb_name_for_location (uint32_t locationID, char *name, size_t len);
    3 = DEVICE_BUSY when another process holds the interface). */
 int lide70_usb_probe_claim (const char *name);
 
+/* Finds the first attached LiDE 70 (04a9:2225) or LiDE 600 (04a9:2224) and
+   writes its "libusb:BUS:ADDR" name. Returns 0 on success, -1 if none. */
+int lide70_usb_find_first (char *name, size_t len);
+
 #ifdef __cplusplus
 }
 #endif

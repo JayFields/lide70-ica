@@ -15,6 +15,9 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
     no-op); `canon_lide70_clear_cancel()` drops a late cancel.
   - `canon_lide70_set_rows_hook()` passes each batch of finished rows to a
     callback while `sane_start` is still scanning, so they can be streamed.
+  - `go_home` times out (30 s) instead of waiting forever.
+  - `canon_lide70_set_linear_gamma()` loads identity gamma tables, so the
+    scanner returns linear sensor values (for shading calibration).
 - `include/sane/` — vendored SANE headers needed by the backend, plus a
   hand-written minimal `config.h` (no `./configure` is run).
 - `shim/sanei_usb_libusb.c` — libusb-1.0 implementation of the `sanei_usb`
@@ -39,6 +42,10 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
   - `ScannerSettings.swift` the TWAIN-style capability dictionary
   - `Scan.swift` runs a scan through the bridge and delivers rows
   - `DocumentWriter.swift` ICA raw file and conversion to JPEG/TIFF/…
+- `ica/Calibration/ShadingCalibration.swift` — shading calibration: white
+  references per resolution, and the per-column correction (Swift library).
+- `tools/calibrate/` — `lide70-calibrate`, which measures the calibration from
+  the white lid.
 
 ## Build
 
@@ -46,6 +53,30 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
     make            # tools
     make module     # ICA module (libusb linked statically, ad-hoc signed)
     sudo make install    # copies to /Library/Image Capture/Devices (no build as root)
+    make calibrate  # once per scanner: lid closed, nothing on the glass
+
+## Shading calibration
+
+The backend does no calibration of its own: it loads one gamma table for all
+three colors and nothing per column. A white page therefore came out pink
+(the sensor reads green ~11% lower than red and blue) with vertical bands
+(columns differ by ~5%, up to ~12%).
+
+`make calibrate` scans a strip of the white lid at each resolution with the
+gamma switched off and saves, per sensor column and color, how bright white
+reads: `~/Library/Application Support/LiDE70Scanner/Calibration.plist`. The
+module then scans linear color, scales each column so its white becomes 255,
+and applies the backend's 2.2 gamma in software; gray and black & white are
+made from the corrected color. Without a calibration for a resolution, the
+module scans as before and logs that it is uncorrected.
+
+`make calibrate ARGS="--verify"` (or `--verify-only`) scans another strip,
+37 mm from the left, and reports the column variation before and after
+correction and the column alignment. On the test scanner: ~5% before,
+~0.8–1.1% after, at every resolution; alignment exact.
+
+At 600 dpi the backend's settings make blue saturate on white (and red read
+weak), so very light colors lose some detail in blue at that resolution.
 
 The module only runs when launched by `icdd` (Image Capture selecting the
 scanner); started by hand it quits with "Open Device Failed". Its log:
@@ -54,8 +85,8 @@ scanner); started by hand it quits with "Open Device Failed". Its log:
 
 ## Status (verified on an M-series Mac)
 
-- Scans work: 75/150/300/600 dpi, color/gray/lineart; byte counts match the
-  backend's predicted parameters. No firmware upload needed. 1200 dpi untested.
+- Scans work: 75–1200 dpi, color/gray/lineart; byte counts match the
+  backend's predicted parameters. No firmware upload needed.
 - USB claim is exclusive per process on macOS: a second claimant gets
   `LIBUSB_ERROR_ACCESS` (→ `DEVICE_BUSY`) and sends nothing to the device.
   The ICA host does not claim the scanner: the module's own libusb claim works.

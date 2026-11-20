@@ -228,6 +228,29 @@ sanei_usb_close (SANE_Int dn)
 }
 
 int
+lide70_usb_find_first (char *name, size_t len)
+{
+  libusb_device **list;
+  ssize_t n, i;
+  int rc = -1;
+
+  sanei_usb_init ();
+  n = libusb_get_device_list (ctx, &list);
+  for (i = 0; i < n && rc; i++)
+    {
+      struct libusb_device_descriptor d;
+      if (libusb_get_device_descriptor (list[i], &d) || d.idVendor != 0x04a9
+	  || (d.idProduct != 0x2225 && d.idProduct != 0x2224))
+	continue;
+      snprintf (name, len, "libusb:%03d:%03d", libusb_get_bus_number (list[i]),
+		libusb_get_device_address (list[i]));
+      rc = 0;
+    }
+  libusb_free_device_list (list, 1);
+  return rc;
+}
+
+int
 lide70_usb_probe_claim (const char *name)
 {
   SANE_Int dn;

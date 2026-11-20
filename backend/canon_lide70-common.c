@@ -234,6 +234,17 @@ cp2155_write_gamma_block (int fd, unsigned int addr, byte * data)
   sanei_usb_write_bulk (fd, data, &count);
 }
 
+/* lide70-ica: when set, every gamma table is the identity, so the scanner
+   returns the sensor's linear values (for shading calibration and software
+   correction by the caller). */
+static int linear_gamma = 0;
+
+void
+canon_lide70_set_linear_gamma (int on)
+{
+  linear_gamma = on;
+}
+
 void
 makegammatable (double gamma, int highlight, unsigned char *buf)
 {
@@ -246,6 +257,13 @@ makegammatable (double gamma, int highlight, unsigned char *buf)
   buf[1] = 0x70;
   buf[2] = 0x00;
   buf[3] = 0x01;
+
+  if (linear_gamma)		/* lide70-ica */
+    {
+      for (in = 0; in <= maxin; in++)
+	buf[in + 4] = (unsigned char) in;
+      return;
+    }
 
   while (in < highlight)
     {

@@ -35,13 +35,30 @@ let package = Package(
                 .unsafeFlags(["-I\(brew)/include/libusb-1.0", "-Wno-unused-parameter", "-Wno-shorten-64-to-32"]),
             ]
         ),
+        // Shading calibration: white references per resolution, and the per-column correction. Pure Swift.
+        .target(
+            name: "ShadingCalibration",
+            path: "ica/Calibration"
+        ),
+        // The Image Capture device module.
         .executableTarget(
             name: "LiDE70Scanner",
-            dependencies: ["LiDE70C"],
+            dependencies: ["LiDE70C", "ShadingCalibration"],
             path: "ica/Sources",
             linkerSettings: [
                 .unsafeFlags(["\(brew)/lib/libusb-1.0.a"]),
                 .linkedFramework("ICADevices"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("Security"),
+            ]
+        ),
+        // Command-line tool that measures the calibration from the scanner lid.
+        .executableTarget(
+            name: "lide70-calibrate",
+            dependencies: ["LiDE70C", "ShadingCalibration"],
+            path: "tools/calibrate",
+            linkerSettings: [
+                .unsafeFlags(["\(brew)/lib/libusb-1.0.a"]),
                 .linkedFramework("IOKit"),
                 .linkedFramework("Security"),
             ]
