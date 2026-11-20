@@ -5,10 +5,16 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
 
 ## Layout
 
-- `backend/` — **vendored, unmodified** from SANE backends
+- `backend/` — **vendored** from SANE backends
   (https://gitlab.com/sane-project/backends, commit
   `7bf6abe2bd1b1cb916aa87b6a377a7ee70313eb3`): `canon_lide70.c`,
   `canon_lide70-common.c`. SANE's license notes are in `backend/LICENSE.sane`.
+  Local changes, marked `lide70-ica` in the source (see
+  `git diff d97b700 -- backend/`):
+  - `sane_cancel` stops a scan running in `sane_start` (upstream it is a
+    no-op); `canon_lide70_clear_cancel()` drops a late cancel.
+  - `canon_lide70_set_rows_hook()` passes each batch of finished rows to a
+    callback while `sane_start` is still scanning, so they can be streamed.
 - `include/sane/` — vendored SANE headers needed by the backend, plus a
   hand-written minimal `config.h` (no `./configure` is run).
 - `shim/sanei_usb_libusb.c` — libusb-1.0 implementation of the `sanei_usb`
@@ -59,7 +65,15 @@ scanner); started by hand it quits with "Open Device Failed". Its log:
   - Text: Image Capture asks for 8-bit gray as an ICA raw file and makes the
     1-bit (CCITT G4) TIFF itself, so the module's own black & white threshold
     path (`TWPT_BW`) is not used by Image Capture.
-  - Untested: 1200 dpi, full-page high-dpi scans, cancel, Preview.
+  - Streaming and cancel: `start` must not return before the image is
+    delivered (with an early return Image Capture showed no overview), and
+    ICADevices delivers Image Capture's 'cans' cancel message only after
+    `start` returns. So the bridge scans on its own thread and streams rows
+    while the head moves; `start` sends them in bands, and the client's
+    "cancelled" reply to a band stops the scanner. Verified in Image
+    Capture: overview; a nearly full page at 600 dpi (4976x6472, 33 s)
+    saved correctly; Cancel stops the scanner ~1.7 s after the click.
+  - Untested: a complete 1200 dpi scan, Preview.
 - Built for macOS 27 (`MACOS_MIN` in the Makefile), because Homebrew's static
   libusb is.
 

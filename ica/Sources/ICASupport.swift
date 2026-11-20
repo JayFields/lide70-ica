@@ -35,11 +35,12 @@ func sendNotification(_ type: CFString?, object: ICAObject, waitForReply: Bool =
 
     var pb = ICASendNotificationPB()
     pb.notificationDictionary = Unmanaged.passUnretained(note as CFMutableDictionary)
-    if waitForReply {
-        return ICDSendNotificationAndWaitForReply(&pb) == .ok ? pb.replyCode : 0
+    let err = waitForReply ? ICDSendNotificationAndWaitForReply(&pb) : ICDSendNotification(&pb)
+    if err != .ok {
+        log("LiDE70: sending \(key(type)) failed: \(err)")
+        return 0
     }
-    ICDSendNotification(&pb)
-    return 0
+    return waitForReply ? pb.replyCode : 0
 }
 
 // MARK: - Fixed-size C character arrays
@@ -51,4 +52,11 @@ func copyCString<T>(_ string: String, into field: inout T) {
         let bytes = Array(string.utf8.prefix(buffer.count - 1))
         buffer.copyBytes(from: bytes)
     }
+}
+
+/// An OSType such as 'btn?' as readable text, for logging.
+func fourCharCode(_ code: UInt32) -> String {
+    let bytes = [24, 16, 8, 0].map { UInt8(truncatingIfNeeded: code >> $0) }
+    return bytes.allSatisfy({ $0 >= 0x20 && $0 < 0x7f })
+        ? String(decoding: bytes, as: UTF8.self) : String(format: "0x%08x", code)
 }

@@ -91,6 +91,12 @@ func readFileData(_ info: UnsafePointer<ScannerObjectInfo>?, _ dataType: UInt32,
     ICAError(paramErr)
 }
 
+/// Image Capture's "cancel scan" message ('cans'). It is not declared in the SDK headers; the value was seen
+/// in the module's log when Cancel was clicked in Image Capture. ICADevices delivers callbacks one at a time,
+/// so it only arrives after `start` has returned; the scan itself is cancelled through the reply to its
+/// progress notifications (see Scan.swift).
+private let messageCancelScan = 0x63616e73   // 'cans'
+
 func sendMessage(_ info: UnsafePointer<ScannerObjectInfo>?, _ pb: UnsafeMutablePointer<ICD_ScannerObjectSendMessagePB>?,
                  _ completion: ICDCompletion?) -> ICAError {
     guard let pb else { return ICAError(paramErr) }
@@ -107,7 +113,10 @@ func sendMessage(_ info: UnsafePointer<ScannerObjectInfo>?, _ pb: UnsafeMutableP
         }
     case kICAMessageScannerOverviewSelectionChanged:
         break   // the selection needs no device-side processing
+    case messageCancelScan:
+        log("--> sendMessage: cancel scan (the scan has already ended)")
     default:
+        log("--> sendMessage: unhandled message '\(fourCharCode(pb.pointee.message.messageType))'")
         err = ICAError(paramErr)
         pb.pointee.result = UInt32(bitPattern: Int32(err))
     }

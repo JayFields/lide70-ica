@@ -2746,6 +2746,31 @@ go_home (CANON_Handle * chndl)
   return 0;
 }
 
+/* lide70-ica: set by sane_cancel() (possibly from another thread) to stop the
+   scan in progress; cleared when sane_start() returns, so a cancel that
+   arrives before the scan loop begins is not lost. */
+static volatile int cancel_requested = 0;
+
+/* lide70-ica: optional consumer of image rows while the scan runs. preread
+   calls it with each batch of finished rows (in the frame format reported by
+   sane_get_parameters), right after writing them to the temp file. Lets a
+   caller show progress and act on a cancel before sane_start returns. */
+static void (*rows_hook) (const unsigned char *data, size_t len) = NULL;
+
+void
+canon_lide70_set_rows_hook (void (*hook) (const unsigned char *, size_t))
+{
+  rows_hook = hook;
+}
+
+/* lide70-ica: drop a cancel that arrived after the last scan ended, before
+   starting a new one from another thread. */
+void
+canon_lide70_clear_cancel (void)
+{
+  cancel_requested = 0;
+}
+
 /* Scan and save the resulting image as r,g,b non-interleaved PPM file */
 static SANE_Status
 preread (CANON_Handle * chndl, SANE_Byte * data, FILE * fp)
@@ -2777,6 +2802,19 @@ preread (CANON_Handle * chndl, SANE_Byte * data, FILE * fp)
      width bytes Blue, repeat for "height" lines. */
 /*  while (line < height)  process one buffer from the scanner */
   long startline = line;
+
+  /* lide70-ica: cancel between buffers. Reset like the end-of-scan branch
+     below so the next scan starts cleanly; do_scan then sends the head home
+     and CANON_start_scan removes the temp file. */
+  if (cancel_requested)
+    {
+      DBG (1, "scan cancelled at line %ld\n", line);
+      init (chndl);
+      line = 0;
+      slot = 0;
+      dstptr = linebuf;
+      return SANE_STATUS_CANCELLED;
+    }
 
   if (line >= (chndl->y1) * chndl->val[opt_resolution].w / 600
       + chndl->params.lines)
@@ -2889,6 +2927,8 @@ preread (CANON_Handle * chndl, SANE_Byte * data, FILE * fp)
 	}
     }				/* one readbuf processed */
   bytes_written = fwrite (data, 1, offset, fp);
+  if (rows_hook && offset > 0)	/* lide70-ica */
+    rows_hook (data, offset);
   DBG (6, "%ld bytes written\n", bytes_written);
   if (bytes_written != offset)
     {

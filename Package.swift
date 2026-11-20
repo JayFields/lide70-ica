@@ -31,7 +31,7 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("include"),
                 .headerSearchPath("backend"),
-                // The vendored backend is kept unmodified; it trips SwiftPM's default -Wshorten-64-to-32.
+                // The vendored backend is kept close to upstream; it trips SwiftPM's default -Wshorten-64-to-32.
                 .unsafeFlags(["-I\(brew)/include/libusb-1.0", "-Wno-unused-parameter", "-Wno-shorten-64-to-32"]),
             ]
         ),

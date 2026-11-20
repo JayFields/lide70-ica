@@ -921,7 +921,9 @@ sane_start (SANE_Handle handle)
   if (res != SANE_STATUS_GOOD)
     return res;
 
-  return CANON_start_scan (&scanner->scan);
+  res = CANON_start_scan (&scanner->scan);
+  cancel_requested = 0;		/* lide70-ica: the scan is over */
+  return res;
 }
 
 
@@ -938,7 +940,10 @@ void
 sane_cancel (SANE_Handle handle)
 {
   DBG (3, "sane_cancel: handle = %p\n", handle);
-  DBG (3, "sane_cancel: cancelling is unsupported in this backend\n");
+  /* lide70-ica: stop a scan running in sane_start (from another thread or a
+     signal handler); it then returns SANE_STATUS_CANCELLED. Data already
+     scanned to the temp file is not cancelled by this. */
+  cancel_requested = 1;
 }
 
 
