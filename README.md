@@ -22,9 +22,17 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
 - `tools/smoke.c` — init / list devices / exit.
 - `tools/usbprobe.c` — standalone libusb probe.
 
-- `ica/` — ICA scanner device module, adapted from Apple's VirtualScanner
-  sample (imported unmodified in its own commit; Apple sample code license).
-  Builds `build/LiDE70Scanner.app`, matching USB 04a9:2225 and 04a9:2224.
+- `shim/lide70_scan.c` — C bridge over the backend (begin/read/end a scan).
+- `ica/` — ICA scanner device module in Swift, matching USB 04a9:2225 and
+  04a9:2224; builds `build/LiDE70Scanner.app`. Its structure follows Apple's
+  VirtualScanner sample (the original Objective-C sample and its adaptation
+  are in the git history). Swift calls the C code as `import LiDE70C` (see `Package.swift`).
+  - `main.swift` registers the C callbacks and runs `ICD_ScannerMain`
+  - `EntryPoints.swift` the callbacks, forwarding to `LiDE70Device`
+  - `LiDE70Device.swift` device properties, sessions, Get/SetParameters
+  - `ScannerSettings.swift` the TWAIN-style capability dictionary
+  - `Scan.swift` runs a scan through the bridge and delivers rows
+  - `DocumentWriter.swift` ICA raw file and conversion to JPEG/TIFF/…
 
 ## Build
 
@@ -44,9 +52,16 @@ scanner); started by hand it quits with "Open Device Failed". Its log:
   backend's predicted parameters. No firmware upload needed. 1200 dpi untested.
 - USB claim is exclusive per process on macOS: a second claimant gets
   `LIBUSB_ERROR_ACCESS` (→ `DEVICE_BUSY`) and sends nothing to the device.
-  `icdd` and the Image Capture app do not claim the scanner while no ICA
-  module exists for it. Untested: whether the ICA host claims it before a
-  module does.
+  The ICA host does not claim the scanner: the module's own libusb claim works.
+- Image Capture with the Swift module: overview (75 dpi) and 300 dpi scans in
+  all three modes saved correctly, at exactly the requested size.
+  - Color: RGB JPEG. Black and White: 8-bit gray JPEG.
+  - Text: Image Capture asks for 8-bit gray as an ICA raw file and makes the
+    1-bit (CCITT G4) TIFF itself, so the module's own black & white threshold
+    path (`TWPT_BW`) is not used by Image Capture.
+  - Untested: 1200 dpi, full-page high-dpi scans, cancel, Preview.
+- Built for macOS 27 (`MACOS_MIN` in the Makefile), because Homebrew's static
+  libusb is.
 
 ## License
 

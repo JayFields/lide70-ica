@@ -6,9 +6,12 @@
 # top-level include/ is found without any -I for SANE headers.
 CC      ?= cc
 ARCH    ?=
+# Oldest macOS the build supports. Homebrew's libusb-1.0.a is built for the OS it was bottled on, so going
+# lower needs a libusb built with a matching -mmacosx-version-min.
+MACOS_MIN ?= 27.0
 LIBUSB_CFLAGS ?= $(shell pkg-config --cflags libusb-1.0)
 LIBUSB_LIBS   ?= $(shell pkg-config --libs libusb-1.0)
-CFLAGS  = $(ARCH) -std=gnu99 -Wall -Wextra -Wno-unused-parameter -Iinclude $(LIBUSB_CFLAGS)
+CFLAGS  = $(ARCH) -mmacosx-version-min=$(MACOS_MIN) -std=gnu99 -Wall -Wextra -Wno-unused-parameter -Iinclude $(LIBUSB_CFLAGS)
 O       = build
 
 TOOLS   = scantest smoke usbprobe
@@ -36,38 +39,27 @@ $(O)/%.o: tools/%.c | $(O)
 $(O):
 	mkdir -p $@
 
-# ---- ICA scanner device module (ica/, adapted from Apple's VirtualScanner sample) ----
-# libusb is linked statically so the bundle does not depend on Homebrew at runtime.
-MODULE      = $(O)/LiDE70Scanner.app
-MOD_SRCS    = $(wildcard ica/Sources/*.m)
-MOD_OBJS    = $(patsubst ica/Sources/%.m,$(O)/ica/%.o,$(MOD_SRCS))
-MOD_HDRS    = $(wildcard ica/Includes/*.h) ica/VirtualScanner_Prefix.pch shim/lide70_usb.h shim/lide70_scan.h
-MOD_CORE    = $(O)/lide70_scan.o $(CORE)
-MOD_CFLAGS  = $(ARCH) -fno-objc-arc -include ica/VirtualScanner_Prefix.pch -Iica/Includes -Ishim \
-              -DSCANNER_DEBUG=1 -Wall -Wno-deprecated-declarations
-LIBUSB_A   ?= $(shell pkg-config --variable=libdir libusb-1.0)/libusb-1.0.a
-MOD_LIBS    = $(LIBUSB_A) -framework Cocoa -framework ICADevices -framework IOKit \
-              -framework DiskArbitration -framework Carbon -framework Security -lobjc
-MOD_RES     = ica/Resources/DeviceInfo.plist ica/Resources/DeviceMatchingInfo.plist \
-              ica/Resources/ScannerProperties.plist
+# ---- ICA scanner device module (ica/, Swift; structure adapted from Apple's VirtualScanner sample) ----
+# Built by Swift Package Manager (Package.swift): target LiDE70C holds the C backend, shim and bridge, and the
+# Swift executable imports it as `import LiDE70C`. Package.swift's platform version should match MACOS_MIN.
+# This rule wraps the executable in an app bundle.
+MODULE       = $(O)/LiDE70Scanner.app
+MOD_SRCS     = Package.swift $(wildcard ica/Sources/*.swift) $(wildcard shim/*.[ch]) \
+               backend/canon_lide70.c backend/canon_lide70-common.c
+MOD_RES      = ica/Resources/DeviceInfo.plist ica/Resources/DeviceMatchingInfo.plist \
+               ica/Resources/ScannerProperties.plist
 
 module: $(MODULE)
 
-$(O)/ica/%.o: ica/Sources/%.m $(MOD_HDRS) | $(O)
-	@mkdir -p $(O)/ica
-	$(CC) $(MOD_CFLAGS) -c $< -o $@
-
-$(O)/lide70_scan.o: shim/lide70_scan.c shim/lide70_scan.h | $(O)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(MODULE): $(MOD_OBJS) $(MOD_CORE) ica/VirtualScanner-Info.plist $(MOD_RES)
+$(MODULE): $(MOD_SRCS) ica/Info.plist $(MOD_RES)
+	swift build -c release --product LiDE70Scanner
 	rm -rf $@
-	mkdir -p $@/Contents/MacOS $@/Contents/Resources/English.lproj
-	$(CC) $(ARCH) -o $@/Contents/MacOS/LiDE70Scanner $(MOD_OBJS) $(MOD_CORE) $(MOD_LIBS) -lm
-	cp ica/VirtualScanner-Info.plist $@/Contents/Info.plist
+	mkdir -p $@/Contents/MacOS $@/Contents/Resources
+	cp "$$(swift build -c release --show-bin-path)/LiDE70Scanner" $@/Contents/MacOS/LiDE70Scanner
+	cp ica/Info.plist $@/Contents/Info.plist
+	plutil -replace LSMinimumSystemVersion -string $(MACOS_MIN) $@/Contents/Info.plist
 	printf 'APPL????' > $@/Contents/PkgInfo
 	cp $(MOD_RES) $@/Contents/Resources/
-	cp ica/Resources/English.lproj/InfoPlist.strings $@/Contents/Resources/English.lproj/
 	codesign --force --sign - $@
 
 # Install/uninstall only copy (no build dependency), so `sudo make install` never builds as root.

@@ -7,6 +7,7 @@
 #include "../include/sane/sane.h"
 #include <libusb.h>
 #include <stdint.h>
+#include "lide70_usb.h"
 
 #define MAX_DEVS 8
 
@@ -224,6 +225,19 @@ sanei_usb_close (SANE_Int dn)
   libusb_release_interface (p->h, p->iface);
   libusb_close (p->h);
   p->used = 0;
+}
+
+int
+lide70_usb_probe_claim (const char *name)
+{
+  SANE_Int dn;
+  SANE_Status s;
+
+  sanei_usb_init ();
+  s = sanei_usb_open (name, &dn);
+  if (s == SANE_STATUS_GOOD)
+    sanei_usb_close (dn);
+  return s;
 }
 
 SANE_Status

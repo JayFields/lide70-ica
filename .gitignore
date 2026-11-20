@@ -9,3 +9,5 @@ build/
 *.pbm
 *.log
 .DS_Store
+.build/
+.swiftpm/

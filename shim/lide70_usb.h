@@ -11,6 +11,11 @@ extern "C" {
    name. Returns 0 on success, -1 if no attached device has that location. */
 int lide70_usb_name_for_location (uint32_t locationID, char *name, size_t len);
 
+/* Opens `name`, claims its interface, and releases it again: checks that this
+   process can use the scanner. Returns a SANE_Status (0 = GOOD,
+   3 = DEVICE_BUSY when another process holds the interface). */
+int lide70_usb_probe_claim (const char *name);
+
 #ifdef __cplusplus
 }
 #endif
