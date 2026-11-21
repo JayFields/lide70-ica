@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// lide70-calibrate: measures the shading calibration from the white scanner lid and saves it where the Image
-// Capture module looks for it (see ica/Calibration/ShadingCalibration.swift).
+// lide70-calibrate: developer tool for the strip calibration (see ica/Calibration/StripCalibration.swift).
+// Users of the module never run it: the factors it measures ship with the module.
 //
-//   lide70-calibrate                 calibrate all resolutions (75, 150, 300, 600, 1200 dpi)
-//   lide70-calibrate --dpi 300,600   only these (other resolutions keep their saved calibration)
-//   lide70-calibrate --verify        afterwards, scan another strip of the lid and report how flat it comes out
-//   lide70-calibrate --verify-only   just the check, with the saved calibration
+//   lide70-calibrate derive [--dpi 75,150,300,600,1200] [--file PATH]
+//       Measures the glass/strip factors: reads the internal white strip and a band of the white lid on the glass
+//       at each resolution, and writes them to PATH (default ica/Resources/StripCalibration.plist). Close the lid
+//       with nothing on the glass. With --dpi, other resolutions in PATH are kept.
 //
-// Close the lid with nothing on the glass. Don't scan from Image Capture or Preview meanwhile.
+//   lide70-calibrate verify [--dpi ...] [--file PATH] [--top MM]
+//       Checks strip-only correction against whatever white is on the glass (the lid, or a sheet of paper): reads
+//       the strip, builds the reference the module would, and scans a band of the glass from 37 mm in (from MM,
+//       default 60, for 10 mm). Reports the column variation before and after, and the color balance.
+//
+// Don't scan from Image Capture or Preview meanwhile.
 
 import Foundation
 import LiDE70C
@@ -18,10 +23,25 @@ let allResolutions = [75, 150, 300, 600, 1200]
 
 // MARK: - Arguments
 
-var resolutions = allResolutions
-var verify = false
-var calibrate = true
+enum Command { case derive, verify }
+
+func fail(_ message: String) -> Never {
+    FileHandle.standardError.write("lide70-calibrate: \(message)\n".data(using: .utf8)!)
+    exit(1)
+}
+
+let usage = "usage: lide70-calibrate derive|verify [--dpi 75,150,300,600,1200] [--file PATH] [--top MM]"
 var arguments = CommandLine.arguments.dropFirst()
+let command: Command
+switch arguments.popFirst() {
+case "derive": command = .derive
+case "verify": command = .verify
+case "-h", "--help": print(usage); exit(0)
+default: fail(usage)
+}
+var resolutions = allResolutions
+var file = URL(fileURLWithPath: "ica/Resources/\(StripCalibration.fileName)")
+var verifyTop = 60.0
 while let argument = arguments.popFirst() {
     switch argument {
     case "--dpi":
@@ -30,88 +50,50 @@ while let argument = arguments.popFirst() {
         if resolutions.isEmpty || !resolutions.allSatisfy(allResolutions.contains) {
             fail("resolutions must be among \(allResolutions)")
         }
-    case "--verify": verify = true
-    case "--verify-only": verify = true; calibrate = false
-    case "-h", "--help":
-        print("usage: lide70-calibrate [--dpi 75,150,300,600,1200] [--verify | --verify-only]"); exit(0)
-    default: fail("unknown argument \(argument)")
+    case "--file":
+        guard let path = arguments.popFirst() else { fail("--file needs a path") }
+        file = URL(fileURLWithPath: path)
+    case "--top":
+        guard let value = arguments.popFirst().flatMap(Double.init) else { fail("--top needs millimetres") }
+        verifyTop = value
+    default: fail("unknown argument \(argument)\n\(usage)")
     }
 }
 
-func fail(_ message: String) -> Never {
-    FileHandle.standardError.write("lide70-calibrate: \(message)\n".data(using: .utf8)!)
-    exit(1)
-}
-
-// MARK: - Scanning a strip
-
-/// A strip of the lid in linear color, to the right edge of the bed: `rows` of `columns` RGB pixels starting at
-/// sensor column `firstColumn`.
-struct Strip {
-    var columns: Int
-    var rows: [[UInt8]]
-    var firstColumn: Int
-}
-
-func scanStrip(device: String, dpi: Int, fromMM top: Double, heightMM: Double, leftMM: Double = 0) -> Strip {
-    var request = lide70_scan_request()
-    request.dpi = Int32(dpi)
-    request.mode = Int32(LIDE70_MODE_COLOR)
-    request.tl_x_mm = leftMM
-    request.br_x_mm = lide70_bed_width_mm
-    request.tl_y_mm = top
-    request.br_y_mm = top + heightMM
-    request.linear = 1
-
-    var format = lide70_scan_format()
-    let status = lide70_scan_start(device, &request, &format)
-    guard status == Int32(LIDE70_GOOD) else {
-        lide70_scan_end()
-        fail("scan at \(dpi) dpi failed to start: \(String(cString: lide70_status_name(status)))")
-    }
-    var rows: [[UInt8]] = []
-    var line = [UInt8](repeating: 0, count: Int(format.bytes_per_line))
-    var have = 0
-    var status2 = Int32(LIDE70_GOOD)
-    while status2 == Int32(LIDE70_GOOD) {
-        var got: Int32 = 0
-        status2 = line.withUnsafeMutableBufferPointer {
-            lide70_scan_read($0.baseAddress! + have, Int32($0.count - have), &got)
-        }
-        have += Int(got)
-        if have == line.count { rows.append(line); have = 0 }
-    }
-    lide70_scan_end()
-    guard status2 == Int32(LIDE70_EOF), format.channels == 3 else {
-        fail("scan at \(dpi) dpi failed: \(String(cString: lide70_status_name(status2)))")
-    }
-    return Strip(columns: Int(format.pixels_per_line), rows: rows, firstColumn: Int(format.first_column))
+/// Runs a scan, exiting with its error message if it fails.
+func scanned<T>(_ body: () throws -> T) -> T {
+    do { return try body() } catch { fail("\(error)") }
 }
 
 // MARK: - Statistics
 
 /// Columns near the edges of the bed are left out of summaries; they read dark and would dominate.
-let edgeMargin = 0.02
-
 func interior(_ columns: Int) -> Range<Int> {
-    let margin = Int(Double(columns) * edgeMargin)
+    let margin = columns / 50
     return margin..<(columns - margin)
 }
 
-func summary(_ values: [Float], _ range: Range<Int>) -> (mean: Float, sd: Float, min: Float, max: Float) {
-    let v = values[range]
-    let mean = v.reduce(0, +) / Float(v.count)
-    let sd = (v.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Float(v.count)).squareRoot()
-    return (mean, sd, v.min()!, v.max()!)
+func summary(_ values: [Float]) -> (mean: Float, cv: Float) {
+    let mean = values.reduce(0, +) / Float(values.count)
+    let sd = (values.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Float(values.count)).squareRoot()
+    return (mean, 100 * sd / mean)
 }
 
-/// Per-column mean of each channel over the strip's rows.
-func columnMeans(_ strip: Strip) -> [[Float]] {
-    var sums = [[Float]](repeating: [Float](repeating: 0, count: strip.columns), count: 3)
-    for row in strip.rows {
-        for x in 0..<strip.columns { for c in 0..<3 { sums[c][x] += Float(row[x * 3 + c]) } }
+/// Per-column mean of each channel over the scan's rows.
+func columnMeans(_ scan: LinearScan) -> [[Float]] {
+    var sums = [[Float]](repeating: [Float](repeating: 0, count: scan.columns), count: 3)
+    for row in scan.rows {
+        for x in 0..<scan.columns { for c in 0..<3 { sums[c][x] += Float(row[x * 3 + c]) } }
     }
-    return sums.map { $0.map { $0 / Float(strip.rows.count) } }
+    return sums.map { $0.map { $0 / Float(scan.rows.count) } }
+}
+
+/// Strip values averaged down to a lower resolution's columns.
+func downsampled(_ values: [Float], step: Int, columns: Int) -> [Float] {
+    (0..<columns).map { x in
+        let start = min(x * step, values.count - 1), end = min(start + step, values.count)
+        return values[start..<end].reduce(0, +) / Float(end - start)
+    }
 }
 
 let names = ["R", "G", "B"]
@@ -121,80 +103,88 @@ let names = ["R", "G", "B"]
 var deviceName = [CChar](repeating: 0, count: 32)
 guard lide70_usb_find_first(&deviceName, deviceName.count) == 0 else { fail("no CanoScan LiDE 70/600 found") }
 let device = deviceName.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+print("Scanner \(device).")
 
-print("Scanner \(device). Close the lid with nothing on the glass.")
-var calibration = ShadingCalibration.load() ?? ShadingCalibration()
-
-if calibrate {
-    for dpi in resolutions {
-        print("\n\(dpi) dpi: scanning the lid (10 mm strip)...")
-        let strip = scanStrip(device: device, dpi: dpi, fromMM: 20, heightMM: 10)
-        var builder = ReferenceBuilder(columns: strip.columns)
-        for row in strip.rows { builder.add(row: row) }
-        let reference = builder.build()
-        calibration.references[String(dpi)] = reference
-
-        print("  \(strip.columns) columns x \(builder.rowCount) rows; white reference (linear, edges excluded):")
-        let range = interior(strip.columns)
-        for (c, values) in [reference.red, reference.green, reference.blue].enumerated() {
-            let s = summary(values, range)
-            print(String(format: "    %@: mean %5.1f  sd %4.1f  min %5.1f  max %5.1f  -> gain %.2f...%.2f",
-                         names[c], s.mean, s.sd, s.min, s.max, 255 / s.max, 255 / max(s.min, RowCorrector.minimumWhite)))
-        }
-        let saturated = [reference.red, reference.green, reference.blue].joined().filter { $0 >= 255 }.count
-        if saturated > 0 {
-            print("    note: \(saturated) column readings are at 255 (sensor saturated); "
-                  + "anything brighter than the lid there will clip")
-        }
-    }
-    calibration.created = Date()
-    do { try calibration.save() } catch { fail("cannot save calibration: \(error)") }
-    print("\nSaved to \(ShadingCalibration.defaultURL.path)")
+/// Strip readings, by (strip resolution, gain code): 75, 150 and 300 dpi share the 300 dpi reading.
+var stripReadings: [String: WhiteReference] = [:]
+@MainActor func strip(for dpi: Int, gainCode: Int) -> WhiteReference {
+    let key = "\(WhiteStrip.resolution(for: dpi))/\(gainCode)"
+    if let reading = stripReadings[key] { return reading }
+    let reading = scanned { try WhiteStrip.read(device: device, dpi: dpi, gainCode: gainCode) }
+    stripReadings[key] = reading
+    return reading
 }
 
-if verify {
+switch command {
+
+case .derive:
+    print("Measuring glass/strip factors from the lid: close the lid with nothing on the glass.")
+    var calibration = StripCalibration.load(from: file) ?? StripCalibration()
     for dpi in resolutions {
-        guard let reference = calibration.reference(dpi: dpi) else {
-            print("\n\(dpi) dpi: no calibration saved; skipped"); continue
-        }
-        // Another strip, starting 37 mm from the left like an area scan, so the column alignment
-        // (first_column) is tested as well.
-        print("\n\(dpi) dpi: verifying on another strip of the lid, from 37 mm...")
-        let strip = scanStrip(device: device, dpi: dpi, fromMM: 60, heightMM: 10, leftMM: 37)
-        let range = interior(strip.columns)
-        let raw = columnMeans(strip)
+        let gainCode = StripCalibration.standardGainCode(dpi: dpi)
+        let stripReading = strip(for: dpi, gainCode: gainCode)
+        let lid = scanned {
+            try LinearScan.scan(device: device, dpi: dpi, gainCode: gainCode, topMM: 20, bottomMM: 30)
+        }.columnMedians()
+        let step = WhiteStrip.resolution(for: dpi) / dpi
+        let stripAtDPI = stripReading.channels.map { downsampled($0, step: step, columns: lid.columns) }
 
-        // Alignment: which shift of the reference fits this strip best (0 means first_column is right).
-        let green = reference.green
-        let bestShift = (-3...3).min { a, b in
-            func spread(_ shift: Int) -> Float {
-                let ratio = range.map { x -> Float in
-                    raw[1][x] / max(green[min(max(strip.firstColumn + x + shift, 0), green.count - 1)],
-                                    RowCorrector.minimumWhite)
-                }
-                return summary(ratio, 0..<ratio.count).sd
-            }
-            return spread(a) < spread(b)
-        }!
-        print("  first column \(strip.firstColumn); best-fitting shift of the reference: \(bestShift) column(s)")
-
-        let corrector = RowCorrector(reference: reference, firstColumn: strip.firstColumn, width: strip.columns)
-        var corrected = strip
-        for i in corrected.rows.indices { corrected.rows[i].withUnsafeMutableBufferPointer { corrector.apply($0) } }
-        let out = columnMeans(corrected)
-        let channels = [reference.red, reference.green, reference.blue]
-
-        print("  column-to-column variation (sd, % of mean), edges excluded:")
+        var factors: [Float] = [], levels: [Float] = []
+        print("\n\(dpi) dpi (gain code \(gainCode)):")
         for c in 0..<3 {
-            // Linear flatness: this strip divided by the reference, per column.
-            let ratio = range.map { x -> Float in
-                raw[c][x] / max(channels[c][min(strip.firstColumn + x, reference.columns - 1)], RowCorrector.minimumWhite)
-            }
-            let r = summary(ratio, 0..<ratio.count)
-            let before = summary(raw[c], range)
-            let after = summary(out[c], range)
-            print(String(format: "    %@: raw %4.1f%%  corrected-linear %4.2f%% (level %.3f)  output mean %5.1f sd %4.2f",
-                         names[c], 100 * before.sd / before.mean, 100 * r.sd / r.mean, r.mean, after.mean, after.sd))
+            let cols = interior(lid.columns).filter { stripAtDPI[c][$0] < 255 && lid.channels[c][$0] < 255 }
+            let ratio = summary(cols.map { lid.channels[c][$0] / stripAtDPI[c][$0] })
+            let stripCols = interior(stripReading.columns).map { stripReading.channels[c][$0] }
+            let saturated = stripReading.channels[c].filter { $0 >= 255 }.count
+            factors.append(ratio.mean)
+            levels.append(summary(stripCols).mean)
+            print(String(format: "    %@: glass/strip %.3f (column-to-column %.2f%%); strip level %5.1f, "
+                         + "%d saturated strip columns", names[c], ratio.mean, ratio.cv, levels[c], saturated))
         }
+        calibration.resolutions[String(dpi)] = .init(gainCode: gainCode, factors: factors, stripLevel: levels)
+    }
+    calibration.measured = Date()
+    calibration.note = "Measured with lide70-calibrate derive: the white lid on the glass vs the internal white "
+        + "strip, on the developer's CanoScan LiDE 70."
+    do { try calibration.save(to: file) } catch { fail("cannot write \(file.path): \(error)") }
+    print("\nWrote \(file.path)")
+
+case .verify:
+    guard let calibration = StripCalibration.load(from: file) else { fail("cannot read \(file.path)") }
+    print("Verifying strip-only correction against the white on the glass (\(verifyTop)-\(verifyTop + 10) mm, "
+          + "from 37 mm in).")
+    for dpi in resolutions {
+        guard let settings = calibration.settings(dpi: dpi) else { print("\n\(dpi) dpi: no factors; skipped"); continue }
+        let stripReading = strip(for: dpi, gainCode: settings.gainCode)
+        let glass = scanned {
+            try LinearScan.scan(device: device, dpi: dpi, gainCode: settings.gainCode,
+                                topMM: verifyTop, bottomMM: verifyTop + 10, leftMM: 37)
+        }
+        // The reference the module builds for a full-width scan, then this band's part of it.
+        let sensorColumns = glass.firstColumn + glass.columns
+        let built: (reference: WhiteReference, check: StripCalibration.Check)
+        do {
+            built = try calibration.reference(fromStrip: stripReading, scanDPI: dpi, columns: sensorColumns)
+        } catch {
+            print("\n\(dpi) dpi: strip reading rejected: \(error)"); continue
+        }
+        let raw = columnMeans(glass)
+        let range = interior(glass.columns)
+
+        print("\n\(dpi) dpi (gain code \(settings.gainCode)): strip level "
+              + built.check.level.map { String(format: "%.3f", $0) }.joined(separator: "/")
+              + " of the calibrated scanner's, \(built.check.filledColumns) saturated strip readings filled in")
+        var levels: [Float] = []
+        for c in 0..<3 {
+            let before = summary(range.map { raw[c][$0] })
+            let ratio = summary(range.map {
+                raw[c][$0] / max(built.reference.channels[c][glass.firstColumn + $0], RowCorrector.minimumWhite)
+            })
+            levels.append(ratio.mean)
+            print(String(format: "    %@: raw %4.2f%%  corrected %4.2f%%  level %.3f (1.000 = as white as the lid)",
+                         names[c], before.cv, ratio.cv, ratio.mean))
+        }
+        print(String(format: "    color balance R/G %.3f, B/G %.3f (1.000 = neutral)",
+                     levels[0] / levels[1], levels[2] / levels[1]))
     }
 }

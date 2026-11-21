@@ -26,6 +26,7 @@ SANE_String_Const sane_strstatus (SANE_Status);
 void canon_lide70_set_rows_hook (void (*hook) (const unsigned char *, size_t));
 void canon_lide70_clear_cancel (void);
 void canon_lide70_set_linear_gamma (int on);
+void canon_lide70_set_afe_gain (int code);
 
 static int inited;
 static SANE_Handle handle;          /* open device, from start until end */
@@ -39,6 +40,7 @@ static int running;                 /* sane_start() has not returned yet */
 static SANE_Status run_status;      /* what it returned */
 static unsigned char *queue;        /* rows not yet read: queue[head..tail) */
 static size_t head, tail, capacity;
+static size_t streamed;            /* bytes the scan produced in all */
 
 static const int dpis[] = { 75, 150, 300, 600, 1200 };
 
@@ -101,6 +103,7 @@ on_rows (const unsigned char *data, size_t len)
     }
   memcpy (queue + tail, data, len);
   tail += len;
+  streamed += len;
   pthread_cond_broadcast (&changed);
   pthread_mutex_unlock (&lock);
 }
@@ -144,7 +147,11 @@ lide70_scan_start (const char *device, const lide70_scan_request *rq, lide70_sca
     }
 
   x0 = clamp (rq->tl_x_mm, 0, LIDE70_BED_WIDTH_MM);
-  y0 = clamp (rq->tl_y_mm, 0, LIDE70_BED_HEIGHT_MM);
+  /* At 300 dpi and up the backend starts 7 mm before the glass (top_edge), so
+     negative tops down to -7 mm reach the internal white strip; below 300 dpi
+     the scan starts on the glass. */
+  y0 = clamp (rq->tl_y_mm, snap_dpi (rq->dpi) >= 300 ? LIDE70_TOP_ABOVE_GLASS_MM : 0,
+              LIDE70_BED_HEIGHT_MM);
   x1 = clamp (rq->br_x_mm, x0, LIDE70_BED_WIDTH_MM);
   y1 = clamp (rq->br_y_mm, y0, LIDE70_BED_HEIGHT_MM);
   dpi = snap_dpi (rq->dpi);
@@ -181,9 +188,10 @@ lide70_scan_start (const char *device, const lide70_scan_request *rq, lide70_sca
     fmt->first_column = (x1 * dpi + 300) / 600;
   }
   canon_lide70_set_linear_gamma (rq->linear);
+  canon_lide70_set_afe_gain (rq->afe_gain > 0 ? rq->afe_gain : -1);	/* -1: default */
 
   pthread_mutex_lock (&lock);
-  head = tail = 0;
+  head = tail = streamed = 0;
   running = 1;
   run_status = SANE_STATUS_GOOD;
   pthread_mutex_unlock (&lock);
@@ -221,7 +229,13 @@ lide70_scan_read (unsigned char *buf, int max, int *got)
       s = SANE_STATUS_GOOD;
     }
   else                              /* finished and fully read */
-    s = run_status == SANE_STATUS_GOOD ? SANE_STATUS_EOF : run_status;
+    {
+      /* The backend ends a scan as if complete when the scanner stops answering
+         (wait_for_data times out and preread reports EOF), so a "good" scan
+         without any data means the scanner did not respond. */
+      s = run_status != SANE_STATUS_GOOD ? run_status
+        : streamed == 0 ? SANE_STATUS_IO_ERROR : SANE_STATUS_EOF;
+    }
   pthread_mutex_unlock (&lock);
   return s;
 }

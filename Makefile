@@ -47,7 +47,7 @@ MODULE       = $(O)/LiDE70Scanner.app
 MOD_SRCS     = Package.swift $(wildcard ica/Sources/*.swift) $(wildcard ica/Calibration/*.swift) \
                $(wildcard shim/*.[ch]) backend/canon_lide70.c backend/canon_lide70-common.c
 MOD_RES      = ica/Resources/DeviceInfo.plist ica/Resources/DeviceMatchingInfo.plist \
-               ica/Resources/ScannerProperties.plist
+               ica/Resources/ScannerProperties.plist ica/Resources/StripCalibration.plist
 
 module: $(MODULE)
 
@@ -62,11 +62,21 @@ $(MODULE): $(MOD_SRCS) ica/Info.plist $(MOD_RES)
 	cp $(MOD_RES) $@/Contents/Resources/
 	codesign --force --sign - $@
 
-# Shading calibration: scans the white lid at each resolution and saves the references the module uses.
-# Close the lid with nothing on the glass. Pass options with ARGS, e.g. make calibrate ARGS="--dpi 300 --verify".
-calibrate:
+# Strip calibration (developer only; users never calibrate). Every scan calibrates itself from the scanner's
+# internal white strip, scaled by glass/strip factors shipped in ica/Resources/StripCalibration.plist.
+#   make strip-factors   measure the factors from the white lid (lid closed, nothing on the glass) and
+#                        rewrite that file; commit it
+#   make verify-strip    check strip-only correction against the white on the glass (lid or paper)
+# Options with ARGS, e.g. make verify-strip ARGS="--dpi 300 --top 20".
+CALIBRATE = "$$(swift build -c release --show-bin-path)/lide70-calibrate"
+
+strip-factors:
 	swift build -c release --product lide70-calibrate
-	"$$(swift build -c release --show-bin-path)/lide70-calibrate" $(ARGS)
+	$(CALIBRATE) derive $(ARGS)
+
+verify-strip:
+	swift build -c release --product lide70-calibrate
+	$(CALIBRATE) verify $(ARGS)
 
 # Install/uninstall only copy (no build dependency), so `sudo make install` never builds as root.
 # Run `make module` first. icdd launches the module when Image Capture selects the scanner.
@@ -84,4 +94,4 @@ uninstall:
 clean:
 	rm -rf $(O) $(TOOLS)
 
-.PHONY: all clean module calibrate install uninstall
+.PHONY: all clean module strip-factors verify-strip install uninstall

@@ -26,9 +26,12 @@ typedef struct
 {
   int    dpi;                 /* snapped to 75/150/300/600/1200 */
   int    mode;                /* LIDE70_MODE_* */
-  double tl_x_mm, tl_y_mm;    /* clamped to the scan bed */
+  double tl_x_mm, tl_y_mm;    /* clamped to the scan bed; at 300 dpi and up tl_y_mm may be negative,
+                                 down to LIDE70_TOP_ABOVE_GLASS_MM, to reach the internal white strip */
   double br_x_mm, br_y_mm;
   int    linear;              /* 1: no gamma, the sensor's linear values (for calibration) */
+  int    afe_gain;            /* PGA gain code 1..63 for the HT82V36 front end; 0 = the backend's
+                                 default (40, ~2.11x). Lower codes keep white below saturation. */
 } lide70_scan_request;
 
 typedef struct
@@ -45,6 +48,8 @@ typedef struct
 /* Scan bed limits in mm, from the backend's option ranges. */
 #define LIDE70_BED_WIDTH_MM   (5104 * 25.4 / 600)
 #define LIDE70_BED_HEIGHT_MM  297.0
+/* Highest start at 300 dpi and up: the backend's top_edge (7 mm before the glass). */
+#define LIDE70_TOP_ABOVE_GLASS_MM (-7.0)
 /* The same as constants, which Swift can import (it skips macros that are expressions). */
 static const double lide70_bed_width_mm = LIDE70_BED_WIDTH_MM;
 static const double lide70_bed_height_mm = LIDE70_BED_HEIGHT_MM;
@@ -59,7 +64,8 @@ int  lide70_scan_start (const char *device, const lide70_scan_request *rq,
 /* Reads up to `max` bytes of image data (whole rows arrive in order, but a
    read may end mid-row). Blocks until data is available. Returns LIDE70_GOOD
    with *got > 0; LIDE70_EOF when the whole image has been read;
-   LIDE70_CANCELLED after lide70_scan_cancel(); or another error status. */
+   LIDE70_CANCELLED after lide70_scan_cancel(); LIDE70_IO_ERROR if the scan
+   ended without any data (the scanner stopped answering); or another error. */
 int  lide70_scan_read (unsigned char *buf, int max, int *got);
 
 /* Asks the running scan to stop. The backend checks between USB buffers,

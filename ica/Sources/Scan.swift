@@ -31,6 +31,10 @@ import TWAIN
 /// The client's reply to a progress notification when the user pressed Cancel.
 private let userCancelledReply = UInt32(bitPattern: Int32(userCanceledErr))
 
+/// How long a white-strip reading is reused before the strip is read again. The scanner's response state has held
+/// through every run of consecutive scans observed, but does change (cause unknown), so readings expire.
+private let stripReadingLifetime: TimeInterval = 10 * 60
+
 /// Layout of the image sent to the client.
 private struct OutputFormat {
     let width: Int
@@ -47,9 +51,10 @@ private struct ScanPlan {
     let xDPI: Double
     let color: Bool, bitonal: Bool
     let threshold: Int
-    /// White reference for this resolution, if `lide70-calibrate` has been run. With one, the backend scans
-    /// linear color and each row is corrected here; without, the backend's own gamma (and gray) is used.
-    let shading: ShadingCalibration.Reference?
+    /// White reference from the scanner's white strip, read just before the scan (see StripCalibration). With
+    /// one, the backend scans linear color and each row is corrected here; without (no factors for this
+    /// resolution, or the strip reading failed), the backend's own gamma, gain and gray are used.
+    let shading: WhiteReference?
     var output: OutputFormat {
         OutputFormat(width: width, components: color ? 3 : 1, bitsPerComponent: bitonal ? 1 : 8)
     }
@@ -129,27 +134,67 @@ extension LiDE70Device {
                    settings.pixelType == nil ? " (default)" : "", settings.bitDepth, threshold,
                    color ? "color" : bitonal ? "b/w" : "gray", transfer, r.documentUTI ?? "-"))
 
-        // Shading calibration, reloaded every scan so a new calibration takes effect without relaunching.
-        let shading = ShadingCalibration.load()?.reference(dpi: Int(xDPI))
-        if shading == nil {
-            log("LiDE70: no shading calibration for \(Int(xDPI)) dpi (run lide70-calibrate); colors and "
-                + "evenness are uncorrected")
-        }
+        // Calibrate from the white strip (the scan must then use the gain the strip was read with).
+        let calibrated = stripCalibratedReference(dpi: Int(xDPI))
 
         // Area in mm. The backend truncates (br - tl) to whole pixels, so an exact N-pixel span can come back as
         // N-1; asking for half a pixel more makes the truncation land on N.
         var rq = lide70_scan_request()
         rq.dpi = Int32(xDPI)
         // Calibrated scans are always linear color from the backend; gray is made after correction.
-        rq.mode = Int32(color || shading != nil ? LIDE70_MODE_COLOR : LIDE70_MODE_GRAY)
-        rq.linear = shading != nil ? 1 : 0
+        rq.mode = Int32(color || calibrated != nil ? LIDE70_MODE_COLOR : LIDE70_MODE_GRAY)
+        rq.linear = calibrated != nil ? 1 : 0
+        rq.afe_gain = Int32(calibrated?.gainCode ?? 0)      // 0: backend default
         rq.tl_x_mm = offsetX / native * 25.4
         rq.tl_y_mm = offsetY / native * 25.4
         rq.br_x_mm = rq.tl_x_mm + (Double(width) + 0.5) / xDPI * 25.4
         rq.br_y_mm = rq.tl_y_mm + (Double(height) + 0.5) / yDPI * 25.4
 
         return ScanPlan(backendRequest: rq, width: width, height: height, xDPI: xDPI, color: color,
-                        bitonal: bitonal, threshold: threshold, shading: shading)
+                        bitonal: bitonal, threshold: threshold, shading: calibrated?.reference)
+    }
+
+    /// The white reference for a scan at `dpi`: reads the scanner's internal white strip (a short linear scan
+    /// just before the glass: 1.2 s at 75-300 dpi, 1.8 s at 600, ~9 s at 1200), or reuses a reading less than
+    /// 10 minutes old, and scales it by the factors shipped in the bundle. nil, with the reason logged, if there
+    /// are no factors for this resolution or the reading failed or looks wrong; the scan then goes ahead
+    /// uncorrected.
+    private func stripCalibratedReference(dpi: Int) -> (reference: WhiteReference, gainCode: Int)? {
+        guard let calibration = StripCalibration.bundled(), let settings = calibration.settings(dpi: dpi) else {
+            log("LiDE70: no strip calibration for \(dpi) dpi in the bundle; colors and evenness are uncorrected")
+            return nil
+        }
+        let stripDPI = WhiteStrip.resolution(for: dpi)
+        let started = Date()
+        do {
+            // Reuse a recent reading at the same strip resolution and gain (an overview and the scan after it share
+            // one); otherwise read the strip.
+            let strip: WhiteReference
+            let source: String
+            if let last = lastStripReading, last.stripDPI == stripDPI, last.gainCode == settings.gainCode,
+               started.timeIntervalSince(last.time) < stripReadingLifetime {
+                strip = last.strip
+                source = String(format: "reused (%.0f s old)", started.timeIntervalSince(last.time))
+            } else {
+                strip = try WhiteStrip.read(device: usbDeviceName, dpi: dpi, gainCode: settings.gainCode)
+                source = String(format: "read in %.1f s", Date().timeIntervalSince(started))
+            }
+            let step = stripDPI / dpi
+            let columns = (strip.columns + step - 1) / step
+            let built = try calibration.reference(fromStrip: strip, scanDPI: dpi, columns: columns)
+            if source.hasPrefix("read") {     // keep only readings that passed the checks
+                lastStripReading = StripReading(stripDPI: stripDPI, gainCode: settings.gainCode, strip: strip,
+                                                time: started)
+            }
+            log(String(format: "LiDE70: white strip at %d dpi %@: level %@ of the calibrated scanner's; "
+                       + "%d saturated readings filled in", stripDPI, source,
+                       built.check.level.map { String(format: "%.3f", $0) }.joined(separator: "/"),
+                       built.check.filledColumns))
+            return (built.reference, settings.gainCode)
+        } catch {
+            log("LiDE70: white strip reading not used (\(error)); scanning uncorrected")
+            return nil
+        }
     }
 
     /// Delivers the streaming scan and writes the document, if the client asked for one.
@@ -177,7 +222,10 @@ extension LiDE70Device {
         let corrector = plan.shading.map {
             RowCorrector(reference: $0, firstColumn: Int(fmt.first_column), width: Int(fmt.pixels_per_line))
         }
-        if corrector != nil { log("LiDE70: applying shading calibration (first column \(fmt.first_column))") }
+        if corrector != nil {
+            log("LiDE70: applying strip calibration (first column \(fmt.first_column), "
+                + "gain code \(plan.backendRequest.afe_gain))")
+        }
 
         // Read rows as they are scanned, convert them into bands, and deliver each full band.
         let delivery = deliverRows(r, from: fmt, as: out, height: height, threshold: plan.threshold,

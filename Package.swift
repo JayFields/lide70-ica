@@ -35,9 +35,11 @@ let package = Package(
                 .unsafeFlags(["-I\(brew)/include/libusb-1.0", "-Wno-unused-parameter", "-Wno-shorten-64-to-32"]),
             ]
         ),
-        // Shading calibration: white references per resolution, and the per-column correction. Pure Swift.
+        // Shading calibration: white references per resolution, the per-column correction, and reading the
+        // internal white strip (which scans through LiDE70C).
         .target(
             name: "ShadingCalibration",
+            dependencies: ["LiDE70C"],
             path: "ica/Calibration"
         ),
         // The Image Capture device module.

@@ -1,70 +1,40 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Shading calibration for the LiDE 70's contact image sensor.
+// Shading correction for the LiDE 70's contact image sensor.
 //
 // Each column of the sensor bar sees the page with its own sensitivity and its own share of the LED light, and
 // the three colors differ too (on the test scanner green read ~11% lower than red and blue). The SANE backend
 // does not correct for this, so a white page came out pink with vertical bands.
 //
-// Calibration scans the white scanner lid with the scanner's gamma switched off (linear sensor values) and keeps,
-// for every sensor column and color, how bright white reads: the white reference. A scan is then corrected by
-// scaling each column so its white reference becomes 255, and the 2.2 gamma the scanner would have applied is
-// applied in software afterwards. References depend on the resolution (below 600 dpi the chip decimates), so
-// there is one per resolution.
+// A scan is corrected against a white reference: for every sensor column and color, how bright white reads in
+// linear sensor values (the scanner's gamma switched off). Each column is scaled so its white becomes 255, and the
+// 2.2 gamma the scanner would have applied is applied in software afterwards. The reference comes from the
+// scanner's internal white strip, read before every scan (see StripCalibration.swift and WhiteStrip.swift).
 
 import Foundation
 
-/// White references for each resolution, measured from the lid by `lide70-calibrate`.
-public struct ShadingCalibration: Codable, Sendable {
+/// How white reads, per sensor column and color, at one resolution, in linear sensor values (0...255).
+/// Column 0 is the left edge of the bed.
+public struct WhiteReference: Codable, Sendable {
+    public var red: [Float]
+    public var green: [Float]
+    public var blue: [Float]
+    public var columns: Int { red.count }
+    public var channels: [[Float]] { [red, green, blue] }
 
-    /// How white reads, per sensor column, at one resolution. Column 0 is the left edge of the bed.
-    public struct Reference: Codable, Sendable {
-        public var red: [Float]
-        public var green: [Float]
-        public var blue: [Float]
-        public var columns: Int { red.count }
-
-        public init(red: [Float], green: [Float], blue: [Float]) {
-            (self.red, self.green, self.blue) = (red, green, blue)
-        }
+    public init(red: [Float], green: [Float], blue: [Float]) {
+        (self.red, self.green, self.blue) = (red, green, blue)
     }
 
-    public var created: Date
-    /// Keyed by resolution in dpi, as a string (property-list dictionary keys must be strings).
-    public var references: [String: Reference]
-
-    public init(created: Date = Date(), references: [String: Reference] = [:]) {
-        self.created = created
-        self.references = references
-    }
-
-    public func reference(dpi: Int) -> Reference? { references[String(dpi)] }
-
-    // MARK: - Storage
-
-    /// ~/Library/Application Support/LiDE70Scanner/Calibration.plist (the module runs as the logged-in user).
-    public static var defaultURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/LiDE70Scanner/Calibration.plist")
-    }
-
-    public static func load(from url: URL = defaultURL) -> ShadingCalibration? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? PropertyListDecoder().decode(ShadingCalibration.self, from: data)
-    }
-
-    public func save(to url: URL = defaultURL) throws {
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let encoder = PropertyListEncoder()
-        encoder.outputFormat = .binary
-        try encoder.encode(self).write(to: url, options: .atomic)
+    public init(channels: [[Float]]) {
+        self.init(red: channels[0], green: channels[1], blue: channels[2])
     }
 }
 
 // MARK: - Measuring a reference
 
-/// Collects linear RGB rows of the white lid and turns them into a Reference: for each column and color the
-/// median over the rows, so dust and specks on the lid do not count.
+/// Collects linear RGB rows of a white surface and turns them into a WhiteReference: for each column and color the
+/// median over the rows, so dust and specks do not count.
 public struct ReferenceBuilder {
     public let columns: Int
     private var rows: [[UInt8]] = []
@@ -79,7 +49,7 @@ public struct ReferenceBuilder {
 
     public var rowCount: Int { rows.count }
 
-    public func build() -> ShadingCalibration.Reference {
+    public func build() -> WhiteReference {
         var channels = [[Float]](repeating: [Float](repeating: 0, count: columns), count: 3)
         var samples = [UInt8](repeating: 0, count: rows.count)
         for x in 0..<columns {
@@ -89,7 +59,7 @@ public struct ReferenceBuilder {
                 channels[c][x] = Float(samples[samples.count / 2])
             }
         }
-        return .init(red: channels[0], green: channels[1], blue: channels[2])
+        return WhiteReference(channels: channels)
     }
 }
 
@@ -111,9 +81,9 @@ public struct RowCorrector: Sendable {
     ///   - firstColumn: the sensor column of the scan's column 0 (lide70_scan_format.first_column).
     ///   - width: pixels per row in the scan.
     ///   - gamma: the curve applied after correction; 2.2 is what the backend's own tables use.
-    public init(reference: ShadingCalibration.Reference, firstColumn: Int, width: Int, gamma: Double = 2.2) {
+    public init(reference: WhiteReference, firstColumn: Int, width: Int, gamma: Double = 2.2) {
         var gains = [UInt32](repeating: 256, count: width * 3)
-        let channels = [reference.red, reference.green, reference.blue]
+        let channels = reference.channels
         for x in 0..<width {
             let column = min(max(firstColumn + x, 0), reference.columns - 1)
             for c in 0..<3 {

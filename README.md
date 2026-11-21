@@ -18,6 +18,8 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
   - `go_home` times out (30 s) instead of waiting forever.
   - `canon_lide70_set_linear_gamma()` loads identity gamma tables, so the
     scanner returns linear sensor values (for shading calibration).
+  - `canon_lide70_set_afe_gain()` sets the analog front end's gain code
+    (upstream: fixed 40).
 - `include/sane/` — vendored SANE headers needed by the backend, plus a
   hand-written minimal `config.h` (no `./configure` is run).
 - `shim/sanei_usb_libusb.c` — libusb-1.0 implementation of the `sanei_usb`
@@ -42,10 +44,14 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
   - `ScannerSettings.swift` the TWAIN-style capability dictionary
   - `Scan.swift` runs a scan through the bridge and delivers rows
   - `DocumentWriter.swift` ICA raw file and conversion to JPEG/TIFF/…
-- `ica/Calibration/ShadingCalibration.swift` — shading calibration: white
-  references per resolution, and the per-column correction (Swift library).
-- `tools/calibrate/` — `lide70-calibrate`, which measures the calibration from
-  the white lid.
+- `ica/Calibration/` — calibration library (Swift): `StripCalibration.swift`
+  (shipped factors, reference from the strip), `WhiteStrip.swift` (reading the
+  strip, linear scans), `ShadingCalibration.swift` (white references and the
+  per-column correction).
+- `ica/Resources/StripCalibration.plist` — the glass/strip factors, measured
+  once with `make strip-factors`; shipped in the module bundle.
+- `tools/calibrate/` — `lide70-calibrate`, the developer tool that measures and
+  verifies those factors.
 
 ## Build
 
@@ -53,7 +59,8 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
     make            # tools
     make module     # ICA module (libusb linked statically, ad-hoc signed)
     sudo make install    # copies to /Library/Image Capture/Devices (no build as root)
-    make calibrate  # once per scanner: lid closed, nothing on the glass
+
+Users don't calibrate: every scan calibrates itself (below).
 
 ## Shading calibration
 
@@ -62,60 +69,92 @@ three colors and nothing per column. A white page therefore came out pink
 (the sensor reads green ~11% lower than red and blue) with vertical bands
 (columns differ by ~5%, up to ~12%).
 
-`make calibrate` scans a strip of the white lid at each resolution with the
-gamma switched off and saves, per sensor column and color, how bright white
-reads: `~/Library/Application Support/LiDE70Scanner/Calibration.plist`. The
-module then scans linear color, scales each column so its white becomes 255,
-and applies the backend's 2.2 gamma in software; gray and black & white are
-made from the corrected color. Without a calibration for a resolution, the
-module scans as before and logs that it is uncorrected.
+**Every scan calibrates itself from the scanner's internal white strip.**
+Before a scan, the module reads the strip (a short linear scan just before the
+glass: 1.2 s for 75–300 dpi, 1.8 s at 600, 9 s at 1200; 75 and 150 dpi use a
+300 dpi reading, averaged down). A reading is reused for 10 minutes at the same
+strip resolution and gain, so an overview and the scan after it share one; the
+scanner's response state (below) has held through every run of consecutive
+scans seen, but does change, so readings expire. The strip
+is not quite the same white as the glass, so its reading is scaled by fixed
+glass/strip factors per color and resolution, from
+`ica/Resources/StripCalibration.plist`. The result is the white reference:
+per sensor column and color, how bright white on the glass reads. The module
+then scans linear color, scales each column so its white becomes 255, and
+applies the backend's 2.2 gamma in software; gray and black & white are made
+from the corrected color. Saturated strip readings are filled in from their
+neighbours; if the strip reading fails or looks wrong (level outside
+0.6–1.4 of the measured scanner's, more than 15% saturated), the scan goes
+ahead uncorrected, and the module logs why.
 
-`make calibrate ARGS="--verify"` (or `--verify-only`) scans another strip,
-37 mm from the left, and reports the column variation before and after
-correction and the column alignment. On the test scanner: ~5% before,
-~0.8–1.1% after, at every resolution; alignment exact.
+**The factors are measured once, by the developer, and ship with the module.**
+`make strip-factors` reads the strip and a band of the white lid at each
+resolution (lid closed, nothing on the glass) and rewrites the plist; commit
+it. Only per-color factors are shipped, not a per-column map: a map measured on
+one scanner would carry that scanner's strip (its dust, its unevenness) to
+every other one. On the test scanner: R 0.887, G 0.905, B 0.908 (75–300 dpi),
+0.907 / 0.925 / 0.928 (600 dpi), 0.876 / 0.895 / 0.897 (1200 dpi, read from a
+narrower band of the strip; see below). Other LiDE 70s are assumed to have
+similar factors; that is untested (only one scanner was available).
 
-At 600 dpi the backend's settings make blue saturate on white (and red read
-weak), so very light colors lose some detail in blue at that resolution.
+If the scanner stops answering over USB (it has happened twice; unplugging it
+fixes it), the backend would end the scan as if complete with no data; the
+bridge reports that as an I/O error, so Image Capture shows a failed scan rather
+than a blank page.
 
-The calibration is a snapshot: nothing recalibrates automatically. LED
-brightness drifts slowly with age; rerun `make calibrate ARGS="--verify-only"`
-now and then, and recalibrate if the corrected variation rises well above ~2%.
+`make verify-strip` checks the result against whatever white is on the glass
+(`ARGS="--top MM"` picks the band). On the test scanner, on the lid, from
+~3.5–4% column variation to 0.7–0.8% (R), 0.9–1.0% (G), 1.3–1.5% (B), with
+neutral color (R/G 0.995–0.997, B/G 1.002–1.003). A per-column calibration
+against the lid reached ~0.7–1.1%: the strip's pattern differs a little from
+the glass's (0.7–1.1%, most in blue). Why the strip rather than a stored
+calibration: the scanner switches, for reasons not yet known, between response
+states ~4% apart in column pattern, and a stored calibration made in one state
+left faint bands in the other; the strip follows the state.
+
+**Analog gain.** The analog front end is a Holtek HT82V36 (one channel: one
+gain for all three colors), which the backend programs through the CP2155
+controller's AFE port (registers 0x85 address, 0x87 data bit 8, 0x88 data bits
+7–0) with PGA code 40, ~2.11x (gain = 5.85 / (1 + 4.85 (63 − code) / 63)). At
+that gain plain white paper saturated in about a third of red and half of blue
+columns. Calibrated scans use code 32 (~1.73x, ~8% headroom); 600 dpi, which
+the backend sets up with a different color balance (red weak, blue strong),
+uses 26 for the same headroom on the strip. The codes are in the factors file.
+Uncalibrated scans keep the backend's gain.
 
 ### Internal white strip
 
 The scanner has a white strip just before the glass, presumably the reference
-Canon's own driver calibrated against. It is a better candidate for the
-authoritative calibration target than the lid, which was only a convenient
-white surface; what stops it today is exposure. Findings (no documentation
-found; measured at 300 dpi with test programs, linear values):
+Canon's own driver calibrated against. Findings (no documentation found;
+measured with test programs, linear values):
 
 - **Where:** reachable only at 300 dpi and above, by starting a scan above the
   usual top: the backend adds a 7 mm `top_edge` there, so a top of −7 mm
   reaches the head's park position (at 75 and 150 dpi the scan starts on the
   glass). In those coordinates: −7 to −6.5 mm dark housing; **−5.5 to −2 mm
   white**; the glass from about −0.5 mm. It stays white with the lid open or a
-  black cover on the glass, so it is part of the scanner.
-- **Stable:** its per-column pattern repeats to 0.40–0.47% between passes, and
+  black cover on the glass, so it is part of the scanner. Read from −5.0 to
+  −2.5 mm; at 1200 dpi, where the head moves slowly, from −4.5 to −3.3 mm
+  (9.0 s instead of 11.8 s; same pattern to within a repeat's noise, but its
+  middle reads ~1% brighter than the wide band, so the factors are measured with
+  the same band). Most of the remaining time is fixed: a 0.8 mm band takes as
+  long.
+- **Stable:** its per-column pattern repeats to 0.3–0.5% between passes, and
   does not depend on what is on the glass (black cover vs white paper:
   0.44–0.47%, the same as repeats). A black cover lowers its overall level by
   ~1% (less stray light from a white page).
-- **Accurate:** its pattern is within 0.73–0.84% of the lid reference. On a
-  sheet of white paper on the glass, both references bring the column
-  variation from ~5% to ~1% (green: strip 0.93%, lid 0.61–0.76%, against a
-  noise floor of 0.80%; the strip leaves a small repeatable ~0.7% pattern,
-  perhaps because it is at a different distance from the sensor than the glass).
-- **Blocker, saturation:** the strip is ~7% brighter than the lid. At the
-  backend's fixed exposure, 70–72% of red and 61–66% of blue columns read 255
-  (green never does), and a saturated column only says "at least this bright".
-  Using the strip as the reference needs lower exposure via the CP2155's
-  registers, which are undocumented.
-- **An outlier pass:** one of six passes read ~3% darker overall and its pattern
-  differed ~4% from all others; the cause is unknown (not what was on the
-  glass). Per-scan calibration from the strip should check each reading
-  against a stored pattern and fall back when it is off.
-- Meanwhile its green level could serve for drift detection: record it at
-  calibration time, re-read it at the start of a scan, and warn when it moves.
+- **Accurate:** on white paper at gain 32, correcting with the strip alone left
+  0.8–1.2% column variation at 75–300 and 1200 dpi, as good as or better than a
+  per-column lid calibration (1.1–1.3%), against a paper noise floor of
+  0.6–0.8%. The strip is ~5–10% brighter than white on the glass, and slightly
+  less so in blue, hence the per-color factors.
+- **Saturation, solved by the lower gain:** at the backend's code 40, 70–72% of
+  red and 61–66% of blue strip columns read 255; at 36: 2% / 1%; at 34 and 32:
+  none (600 dpi blue needs 26). Levels follow the HT82V36 gain curve to ~1%.
+- **State changes:** in the scanner's second response state the strip's
+  pattern differs ~4% and its level ~2% from the first, exactly as the glass's
+  does (scaling a calibration by the strip's change brought a state-changed scan
+  from 4.1% to 0.8%), which is why it is read before every scan.
 
 The module only runs when launched by `icdd` (Image Capture selecting the
 scanner); started by hand it quits with "Open Device Failed". Its log:

@@ -245,6 +245,19 @@ canon_lide70_set_linear_gamma (int on)
   linear_gamma = on;
 }
 
+/* lide70-ica: PGA gain code for the LiDE 70's HT82V36 analog front end,
+   written by init_2225 through the CP2155's AFE port (registers 0x85 address,
+   0x87 data bit 8, 0x88 data bits 7-0). Gain = 5.85 / (1 + 4.85 (63 - G) / 63)
+   for G = 0..63; upstream uses 0x28 (40), about 2.11x, for all colors. */
+#define AFE_PGA_DEFAULT 0x28
+static int afe_pga = AFE_PGA_DEFAULT;
+
+void
+canon_lide70_set_afe_gain (int code)
+{
+  afe_pga = (code >= 0 && code <= 63) ? code : AFE_PGA_DEFAULT;
+}
+
 void
 makegammatable (double gamma, int highlight, unsigned char *buf)
 {
@@ -2393,9 +2406,9 @@ init_2225 (CANON_Handle * chndl)
   cp2155_set (fd, 0x87, 0x00);
   cp2155_set (fd, 0x88, 0x70);
 
-  cp2155_set (fd, 0x85, 0x03);
+  cp2155_set (fd, 0x85, 0x03);	/* HT82V36 register 3: PGA gain */
   cp2155_set (fd, 0x87, 0x00);
-  cp2155_set (fd, 0x88, 0x28);
+  cp2155_set (fd, 0x88, afe_pga);	/* lide70-ica: was 0x28 */
 
   cp2155_set (fd, 0x85, 0x06);
   cp2155_set (fd, 0x87, 0x00);

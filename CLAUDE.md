@@ -6,18 +6,18 @@ layout, build and status; don't duplicate it here.
 
 ## Build, install, test
 
-- `make` (C tools), `make module` (bundle via `swift build`), `make calibrate` (lid closed, glass clear).
+- `make` (C tools), `make module` (bundle via `swift build`; needs `ica/Resources/StripCalibration.plist`).
 - `sudo make install` copies the module to `/Library/Image Capture/Devices/`. The user runs anything that
   needs sudo; ask them, then have them quit and reopen Image Capture.
 - The module only runs when icdd launches it (Image Capture or Preview selecting the scanner). Started by hand
   it quits with "Open Device Failed". So every module change needs install + a test by the user.
 - Read results from the log: `/usr/bin/log show --last 15m --style compact --predicate 'subsystem == "local.lide70ica"'`.
-  Use the full path: zsh's builtin `log` shadows `/usr/bin/log`. Each scan logs request, backend format,
-  "applying shading calibration", rows delivered.
+  Use the full path: zsh's builtin `log` shadows `/usr/bin/log`. Each scan logs request, the white-strip
+  reading, backend format, "applying strip calibration", rows delivered.
 - Check that the installed binary is the current build before reading logs:
   `cmp "/Library/Image Capture/Devices/LiDE70Scanner.app/Contents/MacOS/LiDE70Scanner" build/LiDE70Scanner.app/Contents/MacOS/LiDE70Scanner`.
 - The bridge and backend can be tested on the scanner without installing: small C programs linked against
-  `build/*.o` and libusb (keep them in the scratchpad, not the repo), or `lide70-calibrate --verify`.
+  `build/*.o` and libusb (keep them in the scratchpad, not the repo), or `make verify-strip`.
 - Saved scans go to `~/Pictures` (Image Capture); Preview opens them as untitled documents and keeps no file.
 
 ## Constraints learned the hard way (don't retry these)
@@ -40,6 +40,29 @@ layout, build and status; don't duplicate it here.
   `git diff d97b700 -- backend/` shows them all.
 - `canon_lide70.c` #includes `canon_lide70-common.c`; `sanei_backend.h` defines signal macros, so don't
   include `<signal.h>` there.
+- Hardware: controller Philips CP2155BE (no public datasheet; registers known only from the backend), analog
+  front end Holtek HT82V36 (datasheet public: single channel, PGA register 3, offset register 6). The CP2155
+  writes the AFE via registers 0x85 (address), 0x87 (data bit 8), 0x88 (data bits 7-0).
+
+## Shading calibration (see README)
+
+- Goal: the module is meant for other LiDE 70 owners, who must never calibrate. Every scan calibrates itself
+  from its scanner's internal white strip; only per-color glass/strip factors (+ gain codes) ship, in
+  `ica/Resources/StripCalibration.plist`. Don't ship per-column data measured on the developer's scanner.
+- `make strip-factors` remeasures the factors (lid closed, glass clear, ~2 min); `make verify-strip` checks
+  against whatever white is on the glass. Both scan the user's hardware: ask first, and say what must be on
+  the glass.
+- Strip and glass readings are only comparable at the same gain code (32; 600 dpi 26), the same strip band
+  (`WhiteStrip.band`, narrower at 1200 dpi) and the same session: the scanner switches between response
+  states (~4% column pattern, cause unknown). Changing the band or a gain means re-running
+  `make strip-factors` for that resolution.
+- The module reuses a strip reading for 10 minutes (`stripReadingLifetime` in Scan.swift); the log says
+  "read in" or "reused".
+- If every scan takes ~30 s and returns no data (bridge: I/O error), the scanner has stopped answering USB:
+  have the user unplug and replug it.
+- Faint vertical bands in a calibrated scan: check the module log's "white strip" line, then
+  `make verify-strip`.
+- Test with real data across conditions (both scanner states, lid and paper), not only the current one.
 
 ## Swift and C gotchas
 
@@ -52,7 +75,6 @@ layout, build and status; don't duplicate it here.
 ## Working conventions
 
 - Commit only when the user asks; commit messages explain the why and what was verified.
-- Shading calibration data lives outside the repo: `~/Library/Application Support/LiDE70Scanner/Calibration.plist`.
 - Built for macOS 27 (`MACOS_MIN` in the Makefile and `platforms` in Package.swift must match) because
   Homebrew's static libusb is.
 - License: GPL v2+ (backend). The module's structure follows Apple's VirtualScanner sample (in git history).

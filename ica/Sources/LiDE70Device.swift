@@ -6,7 +6,16 @@
 @preconcurrency import ICADevices
 import LiDE70C
 import Foundation
+import ShadingCalibration
 import UniformTypeIdentifiers
+
+/// A white-strip reading kept for reuse by later scans (see `stripCalibratedReference` in Scan.swift).
+struct StripReading {
+    let stripDPI: Int
+    let gainCode: Int
+    let strip: WhiteReference
+    let time: Date
+}
 
 /// What the client asked for in its last SetParameters call.
 struct ScanRequest {
@@ -42,6 +51,10 @@ final class LiDE70Device: @unchecked Sendable {
 
     var sessionOpen = false
     var request = ScanRequest()
+
+    /// The most recent white-strip reading, reused by scans shortly after it. Only touched from the scan, which
+    /// ICADevices runs on its callback thread one at a time.
+    var lastStripReading: StripReading?
 
     var name: String { settings.name }
 
