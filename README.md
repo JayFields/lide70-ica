@@ -78,6 +78,45 @@ correction and the column alignment. On the test scanner: ~5% before,
 At 600 dpi the backend's settings make blue saturate on white (and red read
 weak), so very light colors lose some detail in blue at that resolution.
 
+The calibration is a snapshot: nothing recalibrates automatically. LED
+brightness drifts slowly with age; rerun `make calibrate ARGS="--verify-only"`
+now and then, and recalibrate if the corrected variation rises well above ~2%.
+
+### Internal white strip
+
+The scanner has a white strip just before the glass, presumably the reference
+Canon's own driver calibrated against. It is a better candidate for the
+authoritative calibration target than the lid, which was only a convenient
+white surface; what stops it today is exposure. Findings (no documentation
+found; measured at 300 dpi with test programs, linear values):
+
+- **Where:** reachable only at 300 dpi and above, by starting a scan above the
+  usual top: the backend adds a 7 mm `top_edge` there, so a top of −7 mm
+  reaches the head's park position (at 75 and 150 dpi the scan starts on the
+  glass). In those coordinates: −7 to −6.5 mm dark housing; **−5.5 to −2 mm
+  white**; the glass from about −0.5 mm. It stays white with the lid open or a
+  black cover on the glass, so it is part of the scanner.
+- **Stable:** its per-column pattern repeats to 0.40–0.47% between passes, and
+  does not depend on what is on the glass (black cover vs white paper:
+  0.44–0.47%, the same as repeats). A black cover lowers its overall level by
+  ~1% (less stray light from a white page).
+- **Accurate:** its pattern is within 0.73–0.84% of the lid reference. On a
+  sheet of white paper on the glass, both references bring the column
+  variation from ~5% to ~1% (green: strip 0.93%, lid 0.61–0.76%, against a
+  noise floor of 0.80%; the strip leaves a small repeatable ~0.7% pattern,
+  perhaps because it is at a different distance from the sensor than the glass).
+- **Blocker, saturation:** the strip is ~7% brighter than the lid. At the
+  backend's fixed exposure, 70–72% of red and 61–66% of blue columns read 255
+  (green never does), and a saturated column only says "at least this bright".
+  Using the strip as the reference needs lower exposure via the CP2155's
+  registers, which are undocumented.
+- **An outlier pass:** one of six passes read ~3% darker overall and its pattern
+  differed ~4% from all others; the cause is unknown (not what was on the
+  glass). Per-scan calibration from the strip should check each reading
+  against a stored pattern and fall back when it is off.
+- Meanwhile its green level could serve for drift detection: record it at
+  calibration time, re-read it at the start of a scan, and warn when it moves.
+
 The module only runs when launched by `icdd` (Image Capture selecting the
 scanner); started by hand it quits with "Open Device Failed". Its log:
 
