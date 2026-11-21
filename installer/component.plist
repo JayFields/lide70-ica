@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- pkgbuild component options. Not relocatable: otherwise Installer "upgrades" any other copy of the bundle
+     it finds (such as build/LiDE70Scanner.app) instead of installing into /Library/Image Capture/Devices. -->
+<plist version="1.0">
+<array>
+	<dict>
+		<key>RootRelativeBundlePath</key>
+		<string>LiDE70Scanner.app</string>
+		<key>BundleIsRelocatable</key>
+		<false/>
+		<key>BundleIsVersionChecked</key>
+		<false/>
+		<key>BundleHasStrictIdentifier</key>
+		<true/>
+		<key>BundleOverwriteAction</key>
+		<string>upgrade</string>
+	</dict>
+</array>
+</plist>

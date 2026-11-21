@@ -78,20 +78,35 @@ verify-strip:
 	swift build -c release --product lide70-calibrate
 	$(CALIBRATE) verify $(ARGS)
 
-# Install/uninstall only copy (no build dependency), so `sudo make install` never builds as root.
-# Run `make module` first. icdd launches the module when Image Capture selects the scanner.
-DEVICES_DIR = /Library/Image Capture/Devices
+# ---- Installer package ----
+# `make pkg` builds build/LiDE70Scanner-<version>.pkg, which installs the module into
+# /Library/Image Capture/Devices (owned by root:wheel). icdd launches it when Image Capture selects the scanner.
+# Open the .pkg, or: sudo installer -pkg build/LiDE70Scanner-<version>.pkg -target /
+# The version is CFBundleShortVersionString in ica/Info.plist. Unsigned by default; to sign, pass
+# PKG_SIGN="Developer ID Installer: Name (TEAMID)" (an Apple Developer Program certificate).
+VERSION   := $(shell /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' ica/Info.plist)
+PKG       = $(O)/LiDE70Scanner-$(VERSION).pkg
+PKG_ID    = local.lide70ica.module
+PKG_SIGN ?=
+PKG_STAGE = $(O)/pkgroot
 
-install:
-	@test -d $(MODULE) || { echo "run 'make module' first"; exit 1; }
-	rm -rf "$(DEVICES_DIR)/LiDE70Scanner.app"
-	ditto $(MODULE) "$(DEVICES_DIR)/LiDE70Scanner.app"
-	chown -R root:wheel "$(DEVICES_DIR)/LiDE70Scanner.app"
+pkg: $(PKG)
 
-uninstall:
-	rm -rf "$(DEVICES_DIR)/LiDE70Scanner.app"
+$(PKG): $(MODULE) installer/Distribution.xml installer/component.plist installer/resources/conclusion.html COPYING
+	rm -rf $(PKG_STAGE) $(O)/pkgres
+	mkdir -p $(PKG_STAGE) $(O)/pkgres
+	ditto --norsrc --noextattr --noqtn $(MODULE) $(PKG_STAGE)/LiDE70Scanner.app
+	COPYFILE_DISABLE=1 pkgbuild --root $(PKG_STAGE) --component-plist installer/component.plist --identifier $(PKG_ID) \
+	  --version $(VERSION) --install-location "/Library/Image Capture/Devices" --ownership recommended $(O)/LiDE70Scanner-component.pkg
+	cp installer/resources/conclusion.html $(O)/pkgres/
+	cp COPYING $(O)/pkgres/COPYING
+	sed -e 's/@VERSION@/$(VERSION)/g' -e 's/@MACOS_MIN@/$(MACOS_MIN)/g' installer/Distribution.xml \
+	  > $(O)/Distribution.xml
+	productbuild --distribution $(O)/Distribution.xml --resources $(O)/pkgres --package-path $(O) \
+	  $(if $(PKG_SIGN),--sign "$(PKG_SIGN)") $@
+	rm -rf $(PKG_STAGE) $(O)/pkgres $(O)/Distribution.xml $(O)/LiDE70Scanner-component.pkg
 
 clean:
 	rm -rf $(O) $(TOOLS)
 
-.PHONY: all clean module strip-factors verify-strip install uninstall
+.PHONY: all clean module pkg strip-factors verify-strip

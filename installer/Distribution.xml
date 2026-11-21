@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- productbuild distribution for the LiDE 70 Image Capture module (see `make pkg`).
+     @VERSION@ and @MACOS_MIN@ are filled in by the Makefile. -->
+<installer-gui-script minSpecVersion="2">
+    <title>CanoScan LiDE 70 Scanner Driver</title>
+    <license file="COPYING"/>
+    <conclusion file="conclusion.html" mime-type="text/html"/>
+    <options customize="never" require-scripts="false" hostArchitectures="arm64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="@MACOS_MIN@"/>
+        </allowed-os-versions>
+    </volume-check>
+    <choices-outline>
+        <line choice="default">
+            <line choice="local.lide70ica.module"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="local.lide70ica.module" visible="false">
+        <pkg-ref id="local.lide70ica.module"/>
+    </choice>
+    <pkg-ref id="local.lide70ica.module" version="@VERSION@" onConclusion="none">LiDE70Scanner-component.pkg</pkg-ref>
+</installer-gui-script>

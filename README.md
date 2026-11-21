@@ -50,6 +50,8 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
   per-column correction).
 - `ica/Resources/StripCalibration.plist` — the glass/strip factors, measured
   once with `make strip-factors`; shipped in the module bundle.
+- `installer/` — the installer package's distribution file, component
+  settings and closing page (`make pkg`).
 - `tools/calibrate/` — `lide70-calibrate`, the developer tool that measures and
   verifies those factors.
 
@@ -58,9 +60,27 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
     brew install libusb pkg-config
     make            # tools
     make module     # ICA module (libusb linked statically, ad-hoc signed)
-    sudo make install    # copies to /Library/Image Capture/Devices (no build as root)
+    make pkg        # installer: build/LiDE70Scanner-<version>.pkg
 
-Users don't calibrate: every scan calibrates itself (below).
+## Install
+
+Open `LiDE70Scanner-<version>.pkg` (or `sudo installer -pkg LiDE70Scanner-<version>.pkg -target /`).
+It installs the module into `/Library/Image Capture/Devices`; then quit and
+reopen Image Capture or Preview. It needs an Apple Silicon Mac with macOS 27 or
+later. Users don't calibrate: every scan calibrates itself (below).
+
+The package is unsigned unless built with
+`make pkg PKG_SIGN="Developer ID Installer: Name (TEAMID)"` (an Apple Developer
+Program certificate; notarize it too, with `xcrun notarytool`). Downloaded
+unsigned, macOS blocks it on first open: open it once, then click Open Anyway
+in System Settings > Privacy & Security. The module inside is ad-hoc signed,
+which is enough to run. The version is `CFBundleShortVersionString` in
+`ica/Info.plist`; raise it for each release.
+
+Uninstall:
+
+    sudo rm -rf "/Library/Image Capture/Devices/LiDE70Scanner.app"
+    sudo pkgutil --forget local.lide70ica.module
 
 ## Shading calibration
 

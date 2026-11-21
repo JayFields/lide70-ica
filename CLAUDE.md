@@ -7,8 +7,12 @@ layout, build and status; don't duplicate it here.
 ## Build, install, test
 
 - `make` (C tools), `make module` (bundle via `swift build`; needs `ica/Resources/StripCalibration.plist`).
-- `sudo make install` copies the module to `/Library/Image Capture/Devices/`. The user runs anything that
-  needs sudo; ask them, then have them quit and reopen Image Capture.
+- `make pkg` builds `build/LiDE70Scanner-<version>.pkg` (pkgbuild + productbuild, files in `installer/`),
+  which installs the module into `/Library/Image Capture/Devices/`. The user installs it (opening the .pkg,
+  or `sudo installer -pkg … -target /`; they run anything that needs sudo); then have them quit and reopen
+  Image Capture. The component is not relocatable on purpose: otherwise Installer updates
+  `build/LiDE70Scanner.app` in place instead. Payload `._` entries are the `com.apple.provenance`
+  attribute every new file gets here; they can't be stripped and are harmless.
 - The module only runs when icdd launches it (Image Capture or Preview selecting the scanner). Started by hand
   it quits with "Open Device Failed". So every module change needs install + a test by the user.
 - Read results from the log: `/usr/bin/log show --last 15m --style compact --predicate 'subsystem == "local.lide70ica"'`.
