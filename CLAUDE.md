@@ -63,7 +63,9 @@ layout, build and status; don't duplicate it here.
 - The module reuses a strip reading for 10 minutes (`stripReadingLifetime` in Scan.swift); the log says
   "read in" or "reused".
 - If every scan takes ~30 s and returns no data (bridge: I/O error), the scanner has stopped answering USB:
-  have the user unplug and replug it.
+  have the user unplug and replug it. A scan whose data stops partway fails (`maxMissingRows` in Scan.swift);
+  icdd's "[Removed] ... CanoScan" log lines show whether the scanner dropped off USB (bus-powered: suspect
+  power or the cable).
 - Faint vertical bands in a calibrated scan: check the module log's "white strip" line, then
   `make verify-strip`.
 - Test with real data across conditions (both scanner states, lid and paper), not only the current one.

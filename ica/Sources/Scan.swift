@@ -35,6 +35,10 @@ private let userCancelledReply = UInt32(bitPattern: Int32(userCanceledErr))
 /// through every run of consecutive scans observed, but does change (cause unknown), so readings expire.
 private let stripReadingLifetime: TimeInterval = 10 * 60
 
+/// Most backend rows that may be missing at the end of a scan before it counts as failed (padded with white up to
+/// that). Every short ending seen so far was the scanner dropping off USB or not answering.
+private let maxMissingRows = 2
+
 /// Layout of the image sent to the client.
 private struct OutputFormat {
     let width: Int
@@ -297,7 +301,15 @@ extension LiDE70Device {
                         log("LiDE70: read error at row \(row): \(String(cString: lide70_status_name(status)))")
                         return (fillPoint, false, ICAError(kICACommunicationErr))
                     }
-                    if row < fmt.lines { log("LiDE70: backend data ended at row \(row) of \(fmt.lines); padding") }
+                    // The backend ends a scan early, but "successfully", when the scanner drops off USB or stops
+                    // answering mid-page. A good scan delivers all its rows, so more than a rounding row or two
+                    // missing means a partial page: fail it rather than save it padded with white.
+                    let missing = Int(fmt.lines) - row
+                    if missing > maxMissingRows {
+                        log("LiDE70: backend data ended at row \(row) of \(fmt.lines); failing the scan")
+                        return (fillPoint, false, ICAError(kICACommunicationErr))
+                    }
+                    if missing > 0 { log("LiDE70: backend data ended at row \(row) of \(fmt.lines); padding") }
                 }
             }
             for i in have..<line.count { line[i] = 0xff }

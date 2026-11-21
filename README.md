@@ -120,7 +120,10 @@ similar factors; that is untested (only one scanner was available).
 If the scanner stops answering over USB (it has happened twice; unplugging it
 fixes it), the backend would end the scan as if complete with no data; the
 bridge reports that as an I/O error, so Image Capture shows a failed scan rather
-than a blank page.
+than a blank page. Likewise, if the data stops partway (the scanner once dropped
+off USB mid-page, then reconnected repeatedly while plugged into a USB-C
+adapter, which looks like a power problem), the module fails the scan instead of
+padding the rest of the page with white; up to 2 missing rows are padded.
 
 `make verify-strip` checks the result against whatever white is on the glass
 (`ARGS="--top MM"` picks the band). On the test scanner, on the lid, from
