@@ -41,10 +41,11 @@
 
 #define MSEC               1000	/* 1ms = 1000us */
 
-/* Assign status and verify a good return code */
+/* Assign status and verify a good return code. lide70-ica: returns the stored
+   status; it returned A, which evaluated A (do_scan) a second time. */
 #define CHK(A) {if ((status = A) != SANE_STATUS_GOOD) {\
                 DBG (1, "Failure on line of %s: %d\n", \
-                     __FILE__, __LINE__ ); return A; }}
+                     __FILE__, __LINE__ ); return status; }}
 
 typedef SANE_Byte byte;
 
@@ -2759,14 +2760,19 @@ static volatile int cancel_requested = 0;
    sane_start if the home sensor never reports home. */
 #define GO_HOME_TIMEOUT 30	/* seconds */
 
-/* Returns 0 when the head is home, -1 on timeout or cancel (lide70-ica). */
+/* Returns 0 when the head is home, -1 on timeout, cancel or a USB error
+   (lide70-ica). */
 static int
 go_home (CANON_Handle * chndl)
 {
   int fd = chndl->fd;
   byte value;
   time_t start_time;
-  cp2155_get (fd, 0x46, &value);
+  if (cp2155_get (fd, 0x46, &value) != SANE_STATUS_GOOD)	/* lide70-ica */
+    {
+      DBG (1, "go_home: scanner not answering\n");
+      return -1;
+    }
   DBG (1, "state sensor: %02x\n", value);
   if (value == 0x08)
     {
@@ -2779,7 +2785,11 @@ go_home (CANON_Handle * chndl)
   while (1)
     {
       usleep (200 * MSEC);
-      cp2155_get (fd, 0x46, &value);
+      if (cp2155_get (fd, 0x46, &value) != SANE_STATUS_GOOD)	/* lide70-ica */
+	{
+	  DBG (1, "go_home: scanner not answering\n");
+	  return -1;
+	}
       DBG (1, "state sensor: %02x\n", value);
 
       if (value == 0x08)
@@ -2879,11 +2889,14 @@ preread (CANON_Handle * chndl, SANE_Byte * data, FILE * fp)
     }
   datasize = wait_for_data (chndl);
 
+  /* lide70-ica: the end of the image is detected above, so no data here means
+     the scanner stopped answering (or was disconnected) partway through. This
+     returned EOF, which do_scan takes as success, and kept the line counters. */
   if (datasize < 0)
     {
-      DBG (1, "no data\n");
-      status = SANE_STATUS_EOF;
-      return status;
+      DBG (1, "no data at line %ld\n", line);
+      status = SANE_STATUS_IO_ERROR;
+      goto stop;
     }
 
   if (datasize > 0xf000)
@@ -2900,8 +2913,9 @@ preread (CANON_Handle * chndl, SANE_Byte * data, FILE * fp)
 
   if (status != SANE_STATUS_GOOD)
     {
-      status = SANE_STATUS_INVAL;
-      return status;
+      DBG (1, "read error at line %ld\n", line);
+      status = SANE_STATUS_IO_ERROR;	/* lide70-ica: was INVAL */
+      goto stop;
     }
 
   /* Contorsions to convert data from line-by-line RGB to byte-by-byte RGB,
@@ -2986,8 +3000,18 @@ preread (CANON_Handle * chndl, SANE_Byte * data, FILE * fp)
       status = SANE_STATUS_IO_ERROR;
     }
   DBG (6, "%ld lines from readbuf\n", line - startline);
-  return status;		/*  to escape from this loop
+  if (status == SANE_STATUS_GOOD)
+    {
+      return status;		/*  to escape from this loop
 				   after processing only one data buffer */
+    }
+
+stop:
+  /* lide70-ica: the scan ends here; start the next one from the first line */
+  line = 0;
+  slot = 0;
+  dstptr = linebuf;
+  return status;
 }
 
 /* Scan and save the resulting image as r,g,b non-interleaved PPM file */

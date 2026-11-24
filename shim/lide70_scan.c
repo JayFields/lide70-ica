@@ -230,9 +230,9 @@ lide70_scan_read (unsigned char *buf, int max, int *got)
     }
   else                              /* finished and fully read */
     {
-      /* The backend ends a scan as if complete when the scanner stops answering
-         (wait_for_data times out and preread reports EOF), so a "good" scan
-         without any data means the scanner did not respond. */
+      /* preread now reports an I/O error when the scanner stops answering;
+         a "good" scan without any data is still treated as one, in case
+         the scanner never sent anything. */
       s = run_status != SANE_STATUS_GOOD ? run_status
         : streamed == 0 ? SANE_STATUS_IO_ERROR : SANE_STATUS_EOF;
     }
