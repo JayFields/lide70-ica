@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
+// Portions adapted from Apple's VirtualScanner sample code, Copyright (C) 2012 Apple Inc.
 //
 // Running a scan: the canon_lide70 SANE backend does the scanning (through the C bridge in shim/lide70_scan.c),
 // and this file delivers the rows to the client while the scanner is still moving.

@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
+// Portions adapted from Apple's VirtualScanner sample code, Copyright (C) 2012 Apple Inc.
 //
 // One attached LiDE 70. Created when ICA opens the USB device; ICA then calls into it through the C entry
 // points in EntryPoints.swift. Structure adapted from Apple's VirtualScanner sample (2012), USB path only.

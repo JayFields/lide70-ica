@@ -1,4 +1,5 @@
 // swift-tools-version: 6.0
+// SPDX-License-Identifier: Apache-2.0
 //
 // Swift package for the ICA device module. `make module` builds it with `swift build` and wraps the
 // executable in LiDE70Scanner.app; opening this file in Xcode (or the folder in VS Code with the Swift

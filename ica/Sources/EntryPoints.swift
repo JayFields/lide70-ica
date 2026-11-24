@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
+// Portions adapted from Apple's VirtualScanner sample code, Copyright (C) 2012 Apple Inc.
 //
 // The C entry points ICADevices calls. Each one finds the LiDE70Device stored in the ScannerObjectInfo's
 // `privateData` and forwards to it. They are plain global functions so Swift can pass them to C as

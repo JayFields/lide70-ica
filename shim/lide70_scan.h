@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Small C bridge over the canon_lide70 SANE backend, so callers (the ICA
    module) need no SANE headers. One scan at a time per process: the backend
    keeps static state.

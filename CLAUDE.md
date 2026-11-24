@@ -83,4 +83,4 @@ layout, build and status; don't duplicate it here.
 - Commit only when the user asks; commit messages explain the why and what was verified.
 - Built for macOS 27 (`MACOS_MIN` in the Makefile and `platforms` in Package.swift must match) because
   Homebrew's static libusb is.
-- License: GPL v2+ (backend). The module's structure follows Apple's VirtualScanner sample (in git history).
+- License: the program is GPLv3 (COPYING; the backend is GPL v2+ without the SANE exception); this project's own files are Apache-2.0 (LICENSE-APACHE), marked with an SPDX line only (no copyright line), and new files should be too. See README "License". The module's structure follows Apple's VirtualScanner sample (in git history).

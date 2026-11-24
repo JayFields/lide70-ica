@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
+// Portions adapted from Apple's VirtualScanner sample code, Copyright (C) 2012 Apple Inc.
 //
 // Logging for the device module. Messages go to the unified log:
 //   /usr/bin/log stream --predicate 'subsystem == "local.lide70ica"'

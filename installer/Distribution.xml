@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- productbuild distribution for the LiDE 70 Image Capture module (see `make pkg`).
+<!-- SPDX-License-Identifier: Apache-2.0
+     productbuild distribution for the LiDE 70 Image Capture module (see `make pkg`).
      @VERSION@ and @MACOS_MIN@ are filled in by the Makefile. -->
 <installer-gui-script minSpecVersion="2">
     <title>CanoScan LiDE 70 Scanner Driver</title>

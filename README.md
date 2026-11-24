@@ -216,4 +216,30 @@ scanner); started by hand it quits with "Open Device Failed". Its log:
 
 ## License
 
-GPL v2 or later (the backend is GPL v2+). See `COPYING`.
+The program as a whole (the `LiDE70Scanner` module, the installer package and
+the command-line tools, which all include the SANE backend) is distributed
+under the **GNU General Public License, version 3**. See `COPYING`.
+
+The files written for this project are licensed under the **Apache License,
+version 2.0** (see `LICENSE-APACHE`), so they can also be reused on their own
+under that license. Each source file names its license in an
+`SPDX-License-Identifier` line:
+
+- **GPL v2 or later** (from SANE, with their original copyright notices):
+  `backend/canon_lide70.c` and `backend/canon_lide70-common.c` (including this
+  project's changes to them, marked `lide70-ica`), and the SANE headers in
+  `include/sane/` other than `config.h`. See `backend/LICENSE.sane`. The two
+  backend files do not carry the SANE linking exception, which is why the
+  program as a whole is GPL; their "or later" allows version 3.
+- **Apache-2.0**: everything else, i.e. `ica/`, `shim/`, `tools/`,
+  `installer/`, `include/sane/config.h`, the build files and the
+  documentation. Files without an SPDX line, such as the property lists, are
+  covered by this too.
+
+The module's Swift code in `ica/Sources/` and the property lists in
+`ica/Resources/` started as Apple's VirtualScanner sample code (2012; imported
+unmodified in commit `b08d745`, with Apple's license terms in its file
+headers). Apple's terms allow modified versions to be redistributed.
+
+The module bundle ships `COPYING`, `LICENSE-APACHE` and `LICENSE.sane` in
+`Contents/Resources/`.

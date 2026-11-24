@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //
 // lide70-calibrate: developer tool for the strip calibration (see ica/Calibration/StripCalibration.swift).
 // Users of the module never run it: the factors it measures ship with the module.

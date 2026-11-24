@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
+// Portions adapted from Apple's VirtualScanner sample code, Copyright (C) 2012 Apple Inc.
 //
 // File transfer ("progressNotificationNoData"): the scan is written as an ICA raw file (header + rows). If the
 // client asked for another format (JPEG, TIFF, PNG, ...), the raw file is a temporary backing store that is

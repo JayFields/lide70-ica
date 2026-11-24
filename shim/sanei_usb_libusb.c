@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Minimal libusb-1.0 implementation of the sanei_usb entry points canon_lide70 uses.
    Device names are "libusb:BUS:ADDR". Not a general sanei_usb replacement. */
 #include <stdio.h>

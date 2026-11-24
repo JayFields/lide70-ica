@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Canon CanoScan LiDE 70 on macOS: SANE canon_lide70 backend + libusb-1.0 shim.
 # Needs: brew install libusb pkg-config
 #   make                       # scantest, smoke, usbprobe for the host arch
@@ -48,10 +49,13 @@ MOD_SRCS     = Package.swift $(wildcard ica/Sources/*.swift) $(wildcard ica/Cali
                $(wildcard shim/*.[ch]) backend/canon_lide70.c backend/canon_lide70-common.c
 MOD_RES      = ica/Resources/DeviceInfo.plist ica/Resources/DeviceMatchingInfo.plist \
                ica/Resources/ScannerProperties.plist ica/Resources/StripCalibration.plist
+# License texts shipped in the bundle: the program is GPLv3, this project's own files are Apache-2.0, and
+# backend/LICENSE.sane covers the SANE backend.
+MOD_LICENSES = COPYING LICENSE-APACHE backend/LICENSE.sane
 
 module: $(MODULE)
 
-$(MODULE): $(MOD_SRCS) ica/Info.plist $(MOD_RES)
+$(MODULE): $(MOD_SRCS) ica/Info.plist $(MOD_RES) $(MOD_LICENSES)
 	swift build -c release --product LiDE70Scanner
 	rm -rf $@
 	mkdir -p $@/Contents/MacOS $@/Contents/Resources
@@ -59,7 +63,7 @@ $(MODULE): $(MOD_SRCS) ica/Info.plist $(MOD_RES)
 	cp ica/Info.plist $@/Contents/Info.plist
 	plutil -replace LSMinimumSystemVersion -string $(MACOS_MIN) $@/Contents/Info.plist
 	printf 'APPL????' > $@/Contents/PkgInfo
-	cp $(MOD_RES) $@/Contents/Resources/
+	cp $(MOD_RES) $(MOD_LICENSES) $@/Contents/Resources/
 	codesign --force --sign - $@
 
 # Strip calibration (developer only; users never calibrate). Every scan calibrates itself from the scanner's

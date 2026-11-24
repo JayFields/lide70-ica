@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: Apache-2.0
 //
 // Shading correction for the LiDE 70's contact image sensor.
 //

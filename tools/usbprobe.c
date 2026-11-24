@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Standalone libusb probe: lists every USB device, then opens/claims any Canon (04a9) device.
    Independent of the SANE backend. Run with LIBUSB_DEBUG=4 for libusb's own log. */
 #include <stdio.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Extras exported by shim/sanei_usb_libusb.c beyond the sanei_usb API. */
 #pragma once
 #include <stddef.h>

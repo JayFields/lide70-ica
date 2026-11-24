@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* Bridge over the canon_lide70 SANE backend. See lide70_scan.h.
 
    sane_start() does the whole scan (writing a temp file) before returning, so

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: Apache-2.0 */
 /* scantest: drive the canon_lide70 backend through a real scan and write PNM.
  *
  *   ./scantest [out.pnm] [dpi] [color|gray|lineart] [width_mm] [height_mm]
