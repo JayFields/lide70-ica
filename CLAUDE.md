@@ -41,7 +41,7 @@ layout, build and status; don't duplicate it here.
 ## Vendored backend
 
 - `backend/` is from SANE commit 7bf6abe2 (README). Keep changes minimal and mark each with `lide70-ica`;
-  `git diff d97b700 -- backend/` shows them all.
+  `git diff dc0d33e -- backend/` shows them all.
 - `canon_lide70.c` #includes `canon_lide70-common.c`; `sanei_backend.h` defines signal macros, so don't
   include `<signal.h>` there.
 - Hardware: controller Philips CP2155BE (no public datasheet; registers known only from the backend), analog

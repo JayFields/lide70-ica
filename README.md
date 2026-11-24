@@ -14,7 +14,7 @@ white strip. Tested with a LiDE 70; the module also matches the LiDE 600
   `7bf6abe2bd1b1cb916aa87b6a377a7ee70313eb3`): `canon_lide70.c`,
   `canon_lide70-common.c`. SANE's license notes are in `backend/LICENSE.sane`.
   Local changes, marked `lide70-ica` in the source (see
-  `git diff d97b700 -- backend/`):
+  `git diff dc0d33e -- backend/`):
   - `sane_cancel` stops a scan running in `sane_start` (upstream it is a
     no-op); `canon_lide70_clear_cancel()` drops a late cancel.
   - `canon_lide70_set_rows_hook()` passes each batch of finished rows to a
@@ -250,7 +250,7 @@ version 2.0** (see `LICENSE-APACHE`). Each source file names its license in an
 
 The module's Swift code in `ica/Sources/` and the property lists in
 `ica/Resources/` started as Apple's VirtualScanner sample code (2012; imported
-unmodified in commit `b08d745`, with Apple's license terms in its file
+unmodified in commit `f98a3a9`, with Apple's license terms in its file
 headers). Apple's terms allow modified versions to be redistributed.
 
 The module bundle ships `COPYING`, `LICENSE-APACHE` and `LICENSE.sane` in
