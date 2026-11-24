@@ -1,7 +1,11 @@
 # lide70-ica
 
-Getting a Canon CanoScan LiDE 70 (USB 04a9:2225; LiDE 600 is 04a9:2224) scanning
-on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
+An Image Capture (ICA) device module that lets the Canon CanoScan LiDE 70
+(USB 04a9:2225) scan on Apple Silicon macOS, from Image Capture, Preview and
+other Image Capture clients. It drives the scanner through SANE's
+`canon_lide70` backend and calibrates every scan from the scanner's internal
+white strip. Tested with a LiDE 70; the module also matches the LiDE 600
+(04a9:2224), which has not been tested.
 
 ## Layout
 
@@ -15,7 +19,13 @@ on Apple Silicon macOS, with the goal of an Image Capture (ICA) device module.
     no-op); `canon_lide70_clear_cancel()` drops a late cancel.
   - `canon_lide70_set_rows_hook()` passes each batch of finished rows to a
     callback while `sane_start` is still scanning, so they can be streamed.
-  - `go_home` times out (30 s) instead of waiting forever.
+  - `go_home` times out (30 s) instead of waiting forever, and fails at once
+    if the scanner stops answering on USB.
+  - `preread` reports `SANE_STATUS_IO_ERROR` (not EOF or INVAL) when the
+    scanner stops sending data or a bulk read fails, and resets its row
+    counters so the next scan starts from the first line.
+  - `CHK()` returns the status it stored instead of evaluating its argument
+    again, which re-ran `do_scan` after a failure or cancel.
   - `canon_lide70_set_linear_gamma()` loads identity gamma tables, so the
     scanner returns linear sensor values (for shading calibration).
   - `canon_lide70_set_afe_gain()` sets the analog front end's gain code
@@ -211,6 +221,9 @@ scanner); started by hand it quits with "Open Device Failed". Its log:
     opened correctly. Like Image Capture, it runs an overview automatically
     when the scanner is selected; that is the client's choice
     (`requestOverviewScan`), not something the module controls.
+- The scanner's front-panel buttons are not supported: the SANE backend does
+  not read them, so the module reports no button presses and pressing one
+  does nothing. Start scans from Image Capture or Preview instead.
 - Built for macOS 27 (`MACOS_MIN` in the Makefile), because Homebrew's static
   libusb is.
 
@@ -221,8 +234,7 @@ the command-line tools, which all include the SANE backend) is distributed
 under the **GNU General Public License, version 3**. See `COPYING`.
 
 The files written for this project are licensed under the **Apache License,
-version 2.0** (see `LICENSE-APACHE`), so they can also be reused on their own
-under that license. Each source file names its license in an
+version 2.0** (see `LICENSE-APACHE`). Each source file names its license in an
 `SPDX-License-Identifier` line:
 
 - **GPL v2 or later** (from SANE, with their original copyright notices):
